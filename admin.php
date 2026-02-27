@@ -460,9 +460,11 @@ if ($action === 'save_madhab' && $_SERVER['REQUEST_METHOD'] === 'POST' && isSupe
 /* ---------- SAVE JUMMAH SETTINGS (all admins) ---------- */
 if ($action === 'save_jummah' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     csrfCheck();
+    try { $db->exec("ALTER TABLE jummah_settings ADD COLUMN talk_by TEXT DEFAULT ''"); } catch(Exception $e) {}
     $j_azaan   = trim($_POST['azaan_time']   ?? '');
     $j_khutbah = trim($_POST['khutbah_time'] ?? '');
     $j_jamaat  = trim($_POST['jamaat_time']  ?? '');
+    $j_talk    = trim($_POST['talk_by']      ?? '');
     $time_re   = '/^\d{2}:\d{2}$/';
     if (!preg_match($time_re,$j_azaan) || !preg_match($time_re,$j_khutbah) || !preg_match($time_re,$j_jamaat)) {
         flash('error', 'All three Jummah times are required in HH:MM format.');
@@ -472,13 +474,14 @@ if ($action === 'save_jummah' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $esc_a = dbEsc($db,$j_azaan.':00');
         $esc_k = dbEsc($db,$j_khutbah.':00');
         $esc_j = dbEsc($db,$j_jamaat.':00');
+        $esc_t = dbEsc($db,$j_talk);
         $r = @$db->query("SELECT COUNT(*) FROM jummah_settings WHERE id='1'");
         if ($r && $r->fetchColumn() > 0) {
-            $db->exec("UPDATE jummah_settings SET azaan_time='$esc_a', khutbah_time='$esc_k', jamaat_time='$esc_j', updated_at=datetime('now') WHERE id='1'");
+            $db->exec("UPDATE jummah_settings SET azaan_time='$esc_a', khutbah_time='$esc_k', jamaat_time='$esc_j', talk_by='$esc_t', updated_at=datetime('now') WHERE id='1'");
         } else {
-            $db->exec("INSERT INTO jummah_settings (id,azaan_time,khutbah_time,jamaat_time) VALUES (1,'$esc_a','$esc_k','$esc_j')");
+            $db->exec("INSERT INTO jummah_settings (id,azaan_time,khutbah_time,jamaat_time,talk_by) VALUES (1,'$esc_a','$esc_k','$esc_j','$esc_t')");
         }
-        flash('success', "Jummah times saved — Azaan $j_azaan · Khutbah $j_khutbah · Jamaat $j_jamaat");
+        flash('success', "Jummah settings saved.");
     }
     redirect('admin.php?action=jummah');
 }
@@ -1624,8 +1627,7 @@ $readonly_fields = [
                     <a href="admin.php?action=settings" class="<?= in_array($action,['settings','save_settings'])?'active':'' ?>">
                         <span class="nav-icon">⚙️</span> Site Settings
                     </a>
-                    <a href="index.php?display=musjid&sim=1&sim_date=<?= date('Y-m-d') ?>&sim_time=<?= date('H:i') ?>:00"
-                       target="_blank" style="color:var(--gold);">
+                    <a href="#" onclick="askMusjidLayout(event, true)" style="color:var(--gold);">
                         <span class="nav-icon">🧪</span> Debug Sim Tool (Musjid)
                     </a>
                     <a href="index.php?sim=1&sim_date=<?= date('Y-m-d') ?>&sim_time=<?= date('H:i') ?>:00"
@@ -1637,9 +1639,22 @@ $readonly_fields = [
                 <a href="index.php" target="_blank">
                     <span class="nav-icon">🌐</span> View Normal Site
                 </a>
-                <a href="index.php?display=musjid" target="_blank">
+                <a href="#" onclick="askMusjidLayout(event, false)">
                     <span class="nav-icon">📺</span> View Musjid Site
                 </a>
+                <script>
+                    function askMusjidLayout(e, isSim) {
+                        e.preventDefault();
+                        let choice = prompt("Which display layout do you want to open?\n\nEnter 1 for Musjid 1 (Classic)\nEnter 2 for Musjid 2 (New Layout)", "1");
+                        if (choice === "1" || choice === "2") {
+                            let url = "index.php?display=musjid" + choice;
+                            if (isSim) {
+                                url += "&sim=1&sim_date=<?= date('Y-m-d') ?>&sim_time=<?= date('H:i') ?>:00";
+                            }
+                            window.open(url, "_blank");
+                        }
+                    }
+                </script>
                 <a href="hadith.php" target="_blank">
                     <span class="nav-icon">📖</span> Daily Hadith
                 </a>
@@ -1753,13 +1768,15 @@ $readonly_fields = [
             $last_times_edit = null;
 
             /* Jummah times */
-            $dash_jum = ['azaan'=>'—','khutbah'=>'—','jamaat'=>'—','updated_at'=>null];
-            $jqr = @$db->query("SELECT azaan_time, khutbah_time, jamaat_time, updated_at FROM jummah_settings WHERE id='1' LIMIT 1");
+            try { $db->exec("ALTER TABLE jummah_settings ADD COLUMN talk_by TEXT DEFAULT ''"); } catch(Exception $e) {}
+            $dash_jum = ['azaan'=>'—','khutbah'=>'—','jamaat'=>'—','talk_by'=>'','updated_at'=>null];
+            $jqr = @$db->query("SELECT azaan_time, khutbah_time, jamaat_time, talk_by, updated_at FROM jummah_settings WHERE id='1' LIMIT 1");
             if ($jqr && $jqrow = $jqr->fetch(PDO::FETCH_ASSOC)) {
                 $dash_jum = [
                         'azaan'      => substr($jqrow['azaan_time'],   0, 5),
                         'khutbah'    => substr($jqrow['khutbah_time'], 0, 5),
                         'jamaat'     => substr($jqrow['jamaat_time'],  0, 5),
+                        'talk_by'    => $jqrow['talk_by'] ?? '',
                         'updated_at' => $jqrow['updated_at'],
                 ];
             }
@@ -1923,7 +1940,13 @@ $readonly_fields = [
                         </div>
                     </div>
 
-                    <!-- Jummah Times -->
+                    <?php
+                    // Force a fresh fetch right before rendering to guarantee 'talk_by' is caught
+                    $dash_talk_by = '';
+                    try { $db->exec("ALTER TABLE jummah_settings ADD COLUMN talk_by TEXT DEFAULT ''"); } catch(Exception $e) {}
+                    $tq = @$db->query("SELECT talk_by FROM jummah_settings WHERE id='1' LIMIT 1");
+                    if ($tq && $tr = $tq->fetch(PDO::FETCH_ASSOC)) { $dash_talk_by = $tr['talk_by']; }
+                    ?>
                     <div class="card" style="cursor:pointer;<?= $today_is_friday ? 'border-color:var(--gold);box-shadow:0 0 20px rgba(201,168,76,0.15);' : '' ?>"
                          onclick="location.href='admin.php?action=jummah'">
                         <div class="card-top-rule"></div>
@@ -1950,6 +1973,14 @@ $readonly_fields = [
                                     <span style="color:var(--cream-dim);">🕌 Jamaat</span>
                                     <strong style="color:var(--gold-light);font-variant-numeric:tabular-nums;"><?= e($dash_jum['jamaat']) ?></strong>
                                 </div>
+
+                                <?php if (!empty($dash_talk_by)): ?>
+                                    <div style="display:flex;justify-content:space-between;font-size:11px;border-top:1px solid rgba(201,168,76,0.2);padding-top:5px;margin-top:2px;">
+                                        <span style="color:var(--cream-dim);">🗣️ Talk By</span>
+                                        <strong style="color:var(--gold-light);"><?= e($dash_talk_by) ?></strong>
+                                    </div>
+                                <?php endif; ?>
+
                             </div>
                             <?php if ($dash_jum['updated_at']): ?>
                                 <div style="font-size:10px;color:var(--gold-dim);margin-top:10px;">Last updated: <?= date('d M Y', strtotime($dash_jum['updated_at'])) ?></div>
@@ -2967,6 +2998,13 @@ $readonly_fields = [
                                                oninput="updateJumPreview()">
                                         <div style="font-size:10px;color:var(--cream-dim);margin-top:4px;">When the prayer begins</div>
                                     </div>
+                                    <div class="form-group" style="margin-top:8px;padding-top:16px;border-top:1px solid rgba(201,168,76,0.1);">
+                                        <label class="form-label">🗣️ Talk By (Optional)</label>
+                                        <input type="text" class="form-input" name="talk_by"
+                                               value="<?= e($jrow['talk_by'] ?? '') ?>"
+                                               oninput="updateJumPreview()" placeholder="e.g. Moulana Ahmed">
+                                        <div style="font-size:10px;color:var(--cream-dim);margin-top:4px;">Name of the speaker for the pre-khutbah talk</div>
+                                    </div>
                                 </div>
 
                                 <div id="jum-error" style="display:none;color:var(--red-soft);font-size:11px;margin-top:14px;"></div>
@@ -3010,8 +3048,10 @@ $readonly_fields = [
                                     <span>Earliest Time</span>
                                 </div>
                                 <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:10px;">
-                                    <div style="font-size:28px;font-weight:800;color:var(--gold-light);font-variant-numeric:tabular-nums;letter-spacing:2px;"
-                                         id="prev-jamaat"><?= e($j_jm) ?></div>
+                                    <div style="text-align:left;">
+                                        <div style="font-size:28px;font-weight:800;color:var(--gold-light);font-variant-numeric:tabular-nums;letter-spacing:2px;line-height:1;" id="prev-jamaat"><?= e($j_jm) ?></div>
+                                        <div id="prev-talk" style="font-size:11px;color:var(--cream);margin-top:8px;display:<?= !empty($jrow['talk_by']) ? 'block' : 'none' ?>;">Talk by: <?= e($jrow['talk_by'] ?? '') ?></div>
+                                    </div>
                                     <div style="text-align:right;">
                                         <!-- earliest comes from DB daily times -->
                                         <div style="display:flex;gap:6px;margin-top:6px;justify-content:flex-end;flex-wrap:wrap;">
@@ -3048,9 +3088,16 @@ $readonly_fields = [
                         const az = document.querySelector('[name="azaan_time"]').value;
                         const kh = document.querySelector('[name="khutbah_time"]').value;
                         const jm = document.querySelector('[name="jamaat_time"]').value;
+                        const tb = document.querySelector('[name="talk_by"]').value;
                         if (az) document.getElementById('prev-azaan').textContent   = az;
                         if (kh) document.getElementById('prev-khutbah').textContent = kh;
                         if (jm) document.getElementById('prev-jamaat').textContent  = jm;
+
+                        const prevTalk = document.getElementById('prev-talk');
+                        if (prevTalk) {
+                            prevTalk.textContent = tb ? 'Talk by: ' + tb : '';
+                            prevTalk.style.display = tb ? 'block' : 'none';
+                        }
                     }
                     function validateJum() {
                         const az = document.querySelector('[name="azaan_time"]').value;

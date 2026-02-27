@@ -13,8 +13,10 @@
 
 date_default_timezone_set('Africa/Johannesburg');
 
+$display_param = $_GET['display'] ?? '';
+
 /* ── Session (needed for simulator/admin — skip for musjid display) ── */
-$is_musjid_display = (isset($_GET['display']) && $_GET['display'] === 'musjid'
+$is_musjid_display = (in_array($display_param, ['musjid1', 'musjid2'])
         && !isset($_GET['sim']) && !isset($_GET['debuglog']) && !isset($_GET['poll']));
 if (!$is_musjid_display) {
     if (session_status() === PHP_SESSION_NONE) session_start();
@@ -26,7 +28,7 @@ if (!$is_musjid_display) {
 }
 
 /* ── Lightweight poll endpoint for musjid display auto-refresh ── */
-if (isset($_GET['poll']) && isset($_GET['display']) && $_GET['display'] === 'musjid') {
+if (isset($_GET['poll']) && in_array($display_param, ['musjid1', 'musjid2'])) {
     $ts = '0';
     try {
         $pl = new PDO('sqlite:' . __DIR__ . '/data.sqlite');
@@ -131,7 +133,7 @@ $madhab       = 'hanafi'; // default
 $active_theme = 'green';
 $custom_theme_json = '{}';
 $remove_copyright = false;
-$jummah    = ['azaan' => '12:20', 'khutbah' => '12:30', 'jamaat' => '13:00']; // default
+$jummah    = ['azaan' => '12:20', 'khutbah' => '12:30', 'jamaat' => '13:00', 'talk_by' => '']; // default
 if ($link) {
     $sn = @$link->query("SELECT setting_key, setting_value FROM site_settings WHERE setting_key IN ('site_name','hijri_offset','madhab','active_theme','custom_theme_json','remove_copyright')");
     if ($sn) while ($sn_row = $sn->fetch(PDO::FETCH_ASSOC)) {
@@ -142,12 +144,17 @@ if ($link) {
         if ($sn_row['setting_key'] === 'custom_theme_json') $custom_theme_json = $sn_row['setting_value'];
         if ($sn_row['setting_key'] === 'remove_copyright')  $remove_copyright = (bool)$sn_row['setting_value'];
     }
-    $jr = @$link->query("SELECT azaan_time, khutbah_time, jamaat_time FROM jummah_settings WHERE id='1' LIMIT 1");
+
+    /* Auto-migrate talk_by column if missing */
+    try { $link->exec("ALTER TABLE jummah_settings ADD COLUMN talk_by TEXT DEFAULT ''"); } catch(Exception $e) {}
+
+    $jr = @$link->query("SELECT azaan_time, khutbah_time, jamaat_time, talk_by FROM jummah_settings WHERE id='1' LIMIT 1");
     if ($jr && $jrow = $jr->fetch(PDO::FETCH_ASSOC)) {
         $jummah = [
                 'azaan'   => substr($jrow['azaan_time'],   0, 5),
                 'khutbah' => substr($jrow['khutbah_time'], 0, 5),
                 'jamaat'  => substr($jrow['jamaat_time'],  0, 5),
+                'talk_by' => $jrow['talk_by'] ?? '',
         ];
     }
 }
@@ -467,8 +474,9 @@ $current_time_hhmm = $sim_active ? substr($sim_time, 0, 5) : date('H:i');
 $jamaat_changes    = nmcGetJamaatChanges($month_number, $date_number, $current_time_hhmm);
 $has_changes       = !empty($jamaat_changes);
 
-/* ── Musjid display mode ── */
-$musjid_mode = (isset($_GET['display']) && $_GET['display'] === 'musjid');
+/* ── Musjid display mode + Layout Routing ── */
+$musjid_mode = in_array($display_param, ['musjid1', 'musjid2']);
+$musjid_layout = ($display_param === 'musjid2') ? 'musjid2' : 'musjid1';
 
 /* ── Ticker text (musjid mode only) ── */
 $musjid_ticker = 'The Prophet ﷺ said: "The first matter that the slave will be brought to account for on the Day of Judgement is the prayer. If it is sound, then the rest of his deeds will be sound. And if it is corrupt, then the rest of his deeds will be corrupt." — (At-Tabarani)';
@@ -568,9 +576,9 @@ if (empty($musjid_ticker_list)) {
 /* ── Prepend copyright ticker if not removed ── */
 if (!$remove_copyright) {
     array_unshift($musjid_ticker_list, [
-        'id' => -999,
-        'message_text' => 'Musjid Display System (MDS) © Copyright 2026 - Muhammed Cotwal - All Rights Reserved | github.com/muhammedc/mds',
-        'display_secs' => 20
+            'id' => -999,
+            'message_text' => 'Musjid Display System (MDS) © Copyright 2026 - Muhammed Cotwal - All Rights Reserved | github.com/muhammedc/mds',
+            'display_secs' => 20
     ]);
 }
 
@@ -628,6 +636,7 @@ $jummah_js = json_encode([
         'azaan'   => $jummah['azaan'],
         'khutbah' => $jummah['khutbah'],
         'jamaat'  => $jummah['jamaat'],
+        'talk_by' => $jummah['talk_by'],
 ]);
 
 /* Simulator config passed to JS */
@@ -969,18 +978,10 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
                 text-shadow: 0 0 40px var(--accent-glow30);
             }
 
-            /* ══ PRAYER COLUMNS — CSS subgrid for perfect cross-column alignment ══
-               .m-prayers is a 5-col × 8-row explicit grid.
-               Each .m-prayer-col uses display:contents so its children become
-               direct grid items — guaranteeing every row (pill, icon, name, desc,
-               jamaat-label, jamaat-time, earliest-primary, earliest-shafi) aligns
-               perfectly across all five columns.
-               Row 8 (earliest-shafi) is only populated by Asr; all other columns
-               place an empty spacer there.                                        */
+            /* ══ MUSJID 1 LAYOUT: PRAYER COLUMNS ══ */
             .m-prayers {
                 display: grid;
                 grid-template-columns: repeat(5, 1fr);
-                /* Rows: pill | icon | name | desc | j-label | j-time | e-primary | e-shafi */
                 grid-template-rows:
         [pill]          auto
         [icon]          auto
@@ -988,28 +989,20 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
         [desc]          auto
         [j-label]       auto
         [j-time]        auto
+        [talk]          auto
         [e-primary]     auto
         [e-shafi]       auto;
                 gap: 0 10px;
                 flex-shrink: 0;
             }
-
-            /* Each column spans all 8 rows as a visual card behind its children */
             .m-prayer-col {
                 background: var(--card-bg);
                 border: 1px solid var(--card-border);
                 border-radius: 16px;
-                display: contents;   /* children become grid items; card look via pseudo */
+                display: contents;
                 position: relative;
                 transition: border-color 0.4s, background 0.4s, box-shadow 0.4s;
             }
-
-            /* Because display:contents removes the box, we fake the card background
-               using a ::before on a wrapper div — instead, wrap each column's items
-               in a real div that spans all 8 rows in its column via grid-row.      */
-            .m-prayer-col { display: contents; }
-
-            /* Column background: a grid-spanning div placed behind content */
             .m-col-bg {
                 border-radius: 16px;
                 background: var(--card-bg);
@@ -1030,16 +1023,12 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
                 opacity: 0;
                 transition: opacity 0.4s;
             }
-
-            /* Active / missed states target the bg div */
             .m-prayer-col.active   .m-col-bg { border-color: var(--gold); background: var(--accent-act); box-shadow: 0 0 48px var(--accent-shadow2), inset 0 0 28px var(--accent-act2); }
             .m-prayer-col.active   .m-col-bg::before { opacity: 1; }
-            /* Missed: dim via data-col attribute set by JS on all children */
             [data-missed="1"] { opacity: 0.42; }
 
-            /* Every direct child of display:contents is a grid item — assign rows */
-            .m-col-bg        { grid-row: pill / span 8; z-index: 0; }
-            .m-pill-row      { grid-row: pill;    z-index: 1; display: flex; justify-content: center; align-items: center; min-height: 28px; padding-top: 10px; }
+            .m-col-bg        { grid-row: pill / span 9; z-index: 0; }
+            .m-pill-row      { grid-row: pill; z-index: 1; display: flex; justify-self: stretch; width: 100%; justify-content: flex-end; align-items: center; min-height: 28px; padding-top: 10px; padding-right: 14px; box-sizing: border-box; }
             .m-prayer-icon   { grid-row: icon;    z-index: 1; font-size: clamp(32px, 3.5vh, 46px); line-height: 1; text-align: center; padding: 4px 0 0; }
             .m-prayer-name   { grid-row: name;    z-index: 1; font-family: 'Cinzel Decorative', serif; font-size: clamp(15px, 1.6vh, 22px); color: var(--gold); letter-spacing: 1.5px; text-align: center; padding: 2px 8px 0; }
             .m-prayer-desc   { grid-row: desc;    z-index: 1; font-size: clamp(9px, 0.9vh, 11px); color: var(--gold-dim); letter-spacing: 2px; text-transform: uppercase; text-align: center; padding-bottom: 2px; }
@@ -1047,7 +1036,6 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
             .m-jamaat-time   { grid-row: j-time;  z-index: 1; font-size: clamp(44px, 5.8vh, 76px); font-weight: 800; color: var(--text-bright); font-variant-numeric: tabular-nums; letter-spacing: 2px; line-height: 1; text-align: center; }
             .m-prayer-col.active .m-jamaat-time { color: var(--gold-light); }
 
-            /* Earliest-primary row: shared by Fajr, Zuhr, Asr-Hanafi, Esha; empty for Maghrib */
             .m-earliest-primary {
                 grid-row: e-primary;
                 z-index: 1;
@@ -1057,7 +1045,6 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
                 gap: 4px;
                 padding: clamp(5px, 0.6vh, 9px) 12px clamp(4px, 0.4vh, 6px);
             }
-            /* Divider inside e-primary */
             .m-prayer-divider {
                 width: 55%;
                 height: 1px;
@@ -1079,7 +1066,6 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
             .m-earliest-label { font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: var(--gold-dim); margin-bottom: 2px; }
             .m-earliest-time  { font-size: clamp(18px, 2.2vh, 28px); font-weight: 700; color: var(--gold-light); font-variant-numeric: tabular-nums; letter-spacing: 2px; line-height: 1; }
 
-            /* Earliest-shafi row: only Asr; others use .m-shafi-spacer (empty) */
             .m-earliest-shafi {
                 grid-row: e-shafi;
                 z-index: 1;
@@ -1094,7 +1080,6 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
                 padding-bottom: clamp(8px, 0.8vh, 12px);
             }
 
-            /* Status pill styles */
             .m-status-pill {
                 font-size: 10px;
                 font-weight: 800;
@@ -1111,9 +1096,7 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
             .pill-tomorrow { background: rgba(168,130,20,0.25); color: #d4aa30; border: 1px solid rgba(168,130,20,0.5); }
 
 
-            /* ══ MIDDLE ZONE ══
-               3fr left  = Community Notice (spans ~Fajr→half-Maghrib width)
-               2fr right = Hadith of the Day (top half) + Funeral Notice (bottom half) */
+            /* ══ MUSJID 1 LAYOUT: MIDDLE ZONE ══ */
             .m-middle {
                 display: grid;
                 grid-template-columns: 3fr 2fr;
@@ -1121,13 +1104,99 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
                 flex: 1;
                 min-height: 0;
             }
-
-            /* Right column: stacks Hadith + Funeral vertically, each half height */
             .m-middle-right {
                 display: flex;
                 flex-direction: column;
                 gap: 10px;
                 min-height: 0;
+            }
+
+            /* ══ MUSJID 2 LAYOUT CLASSES ══ */
+            .m2-middle {
+                display: grid;
+                grid-template-columns: 2fr 1fr 2fr;
+                gap: 14px;
+                flex: 1;
+                min-height: 0;
+            }
+            .m2-col {
+                display: flex;
+                flex-direction: column;
+                gap: 14px;
+                min-height: 0;
+            }
+            .m2-prayers-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 14px;
+                flex-shrink: 0;
+            }
+            /* Override for self-contained cards in m2 layout */
+            .m2-prayer-card {
+                display: flex !important;
+                flex-direction: column;
+                align-items: center;
+                justify-content: flex-start;
+                height: 31vh; /* Locks all cards to the exact same size */
+                background: var(--card-bg);
+                border: 1px solid var(--card-border);
+                border-radius: 16px;
+                position: relative;
+                padding: 6px 10px 10px;
+                transition: border-color 0.4s, background 0.4s, box-shadow 0.4s;
+            }
+            /* Strip the old grid-row assignments to prevent overlap */
+            .m2-prayer-card > * {
+                grid-row: auto !important;
+                grid-column: auto !important;
+            }
+            .m2-prayer-card .m-pill-row {
+                width: 100%;
+                display: flex;
+                justify-content: flex-end; /* Pushes the pill to the right */
+                min-height: 24px;
+                padding-top: 4px;
+                margin-bottom: 2px;
+            }
+            .m2-prayer-card .m-prayer-icon { padding-top: 0; }
+
+            /* Perfectly Align Earliest Times Across All Cards */
+            .m2-prayer-card .m-earliest-primary {
+                width: 100%;
+                margin-top: auto; /* Pushes block down perfectly from the Jamaat Time */
+                padding: 4px 12px 60px; /* 60px bottom padding creates an equal void on all cards */
+            }
+            .m2-prayer-card .m-earliest-shafi {
+                position: absolute;
+                bottom: 12px;
+                left: 10px; right: 10px; /* Respects the 10px side padding of the card */
+                height: 48px;
+                padding: 0 12px;
+            }
+            .m2-prayer-card .m-shafi-spacer {
+                display: none !important; /* Hidden, we no longer need the spacer */
+            }
+            .m2-prayer-card.active { border-color: var(--gold); background: var(--accent-act); box-shadow: 0 0 48px var(--accent-shadow2), inset 0 0 28px var(--accent-act2); }
+            .m2-prayer-card::before {
+                content: '';
+                position: absolute;
+                top: 0; left: 0; right: 0;
+                height: 3px;
+                background: linear-gradient(to right, transparent, var(--gold), transparent);
+                opacity: 0;
+                transition: opacity 0.4s;
+                border-radius: 16px 16px 0 0;
+            }
+            .m2-prayer-card.active::before { opacity: 1; }
+            .m2-prayer-card .m-col-bg { display: none; }
+            .m2-prayer-card.active .m-jamaat-time { color: var(--gold-light); }
+
+            /* Fix Double-Opacity Bug on Missed Prayers */
+            .m2-prayer-card[data-missed="1"] {
+                opacity: 0.42;
+            }
+            .m2-prayer-card [data-missed="1"] {
+                opacity: 1 !important; /* Prevents text from double-dimming */
             }
 
             /* Shared card base */
@@ -1148,19 +1217,17 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
                 z-index: 10;
             }
 
-            /* ── Community Notice card (left, full height) ── */
+            /* ── Community Notice card ── */
             .m-notice-card {
                 background: linear-gradient(160deg, var(--bg-card-hi) 0%, var(--bg-deep) 100%);
                 border: 1px solid var(--accent-str);
                 flex: 1;
                 position: relative;
-                padding: 0 !important;  /* slides handle their own padding */
+                padding: 0 !important;
                 display: flex;
                 flex-direction: column;
                 min-height: 0;
             }
-
-            /* ── Slide progress bar — thin line at bottom of notice card ── */
             .m-slide-progress {
                 position: absolute;
                 bottom: 0; left: 0;
@@ -1221,7 +1288,7 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
                 flex: 1;
             }
 
-            /* ── Hadith card (right top, flex:1 = 50% of right column) ── */
+            /* ── Hadith card ── */
             .m-hadith-card {
                 background: var(--card-bg);
                 border: 1px solid var(--card-border);
@@ -1301,7 +1368,7 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
             }
             .m-hadith-main {
                 font-family: 'Amiri', serif;
-                font-size: 18px;        /* JS overwrites this */
+                font-size: 18px;
                 color: var(--cream);
                 line-height: 1.45;
                 text-align: center;
@@ -1310,7 +1377,7 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
             }
             .m-hadith-source {
                 font-family: 'Cinzel Decorative', serif;
-                font-size: 10px;        /* JS sets this relative to main */
+                font-size: 10px;
                 color: var(--gold-dim);
                 text-align: center;
                 letter-spacing: 0.5px;
@@ -1320,7 +1387,7 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
                 flex-shrink: 0;
             }
 
-            /* ── Funeral Notice card (right bottom, flex:1 = 50% of right column) ── */
+            /* ── Funeral Notice card ── */
             .m-funeral-card {
                 background: linear-gradient(160deg, var(--bg-card-hi) 0%, var(--bg-deep) 100%);
                 border: 1px solid rgba(192,57,43,0.28);
@@ -1365,7 +1432,7 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
                 flex: 1;
             }
 
-            /* ══ MARKERS ROW — 4 time markers + next-event as 5th column ══ */
+            /* ══ MARKERS ROW ══ */
             .m-markers {
                 display: grid;
                 grid-template-columns: repeat(4, 1fr) 1.2fr;
@@ -1387,7 +1454,6 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
             .m-marker-time { font-size: clamp(20px, 2.2vh, 28px); font-weight: 800; color: var(--red-soft); font-variant-numeric: tabular-nums; letter-spacing: 2px; line-height: 1; }
             .m-marker-note { font-size: 8px; color: var(--gold-dim); margin-top: 2px; }
 
-            /* 5th column: next event card — same card style with countdown */
             .m-event-card {
                 background: var(--bg-marker);
                 border: 1px solid var(--accent-mid);
@@ -1452,397 +1518,160 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
                 to   { transform: translateX(var(--ticker-end)); }
             }
 
-            /* ══ JAMAAT CHANGE NOTICE — musjid card styles ══ */
-            /* The notice card uses .m-notice-card container (already styled).
-               These classes style its inner content. */
-            .m-notice-slide .jc-eyebrow {
-                font-size: 9px;
-                letter-spacing: 4px;
-                text-transform: uppercase;
-                color: #E8A030;
-                font-weight: 800;
-                flex-shrink: 0;
-                margin-bottom: 6px;
-                display: flex;
-                align-items: center;
-                gap: 8px;
-            }
-            .m-notice-slide .jc-eyebrow::after {
-                content: '';
-                flex: 1;
-                height: 1px;
-                background: linear-gradient(to right, rgba(232,160,48,0.5), transparent);
-            }
-            .m-notice-slide .jc-divider {
-                height: 1px;
-                background: linear-gradient(to right, transparent, rgba(232,160,48,0.3), transparent);
-                flex-shrink: 0;
-                margin: 4px 0;
-            }
-            .m-notice-slide .jc-day-header {
-                font-size: 9px;
-                letter-spacing: 3px;
-                text-transform: uppercase;
-                color: rgba(232,160,48,0.7);
-                font-weight: 700;
-                margin: 6px 0 3px;
-                flex-shrink: 0;
-            }
-            .m-notice-slide .jc-row {
-                display: flex;
-                align-items: center;
-                gap: 10px;
-                padding: 7px 10px;
-                border-radius: 10px;
-                background: rgba(232,160,48,0.07);
-                border: 1px solid rgba(232,160,48,0.18);
-                flex-shrink: 0;
-                margin-bottom: 5px;
-            }
-            .m-notice-slide .jc-icon {
-                font-size: clamp(18px, 2vh, 26px);
-                flex-shrink: 0;
-                width: 30px;
-                text-align: center;
-            }
-            .m-notice-slide .jc-prayer {
-                font-family: 'Cinzel Decorative', serif;
-                font-size: clamp(12px, 1.5vh, 18px);
-                color: #F5C842;
-                font-weight: 700;
-                flex: 1;
-                white-space: nowrap;
-            }
-            .m-notice-slide .jc-when {
-                font-size: clamp(9px, 1.1vh, 13px);
-                color: var(--cream-dim);
-                font-style: italic;
-                flex: 1;
-                text-align: center;
-            }
-            .m-notice-slide .jc-times {
-                display: flex;
-                align-items: center;
-                gap: 6px;
-                flex-shrink: 0;
-            }
-            .m-notice-slide .jc-from {
-                font-size: clamp(14px, 1.8vh, 22px);
-                font-weight: 600;
-                color: var(--cream-dim);
-                text-decoration: line-through;
-                font-variant-numeric: tabular-nums;
-                opacity: 0.7;
-            }
-            .m-notice-slide .jc-arrow {
-                font-size: clamp(14px, 1.8vh, 22px);
-                color: #E8A030;
-                font-weight: 700;
-            }
-            .m-notice-slide .jc-to {
-                font-size: clamp(16px, 2.1vh, 26px);
-                font-weight: 800;
-                color: #F5C842;
-                font-variant-numeric: tabular-nums;
-                letter-spacing: 1px;
-            }
-            .m-notice-slide .jc-dir {
-                font-size: clamp(9px, 1vh, 12px);
-                font-weight: 700;
-                padding: 2px 8px;
-                border-radius: 20px;
-                white-space: nowrap;
-                flex-shrink: 0;
-            }
-            .m-notice-slide .jc-dir.earlier {
-                background: rgba(100,180,255,0.15);
-                color: #8DC8F0;
-                border: 1px solid rgba(100,180,255,0.25);
-            }
-            .m-notice-slide .jc-dir.later {
-                background: rgba(255,160,60,0.15);
-                color: #FFAA44;
-                border: 1px solid rgba(255,160,60,0.25);
-            }
-            .m-notice-slide .jc-footer {
-                font-size: clamp(11px, 1.3vh, 16px);
-                font-weight: 700;
-                color: #E8A030;
-                text-align: center;
-                flex-shrink: 0;
-                margin-top: 4px;
-                letter-spacing: 0.5px;
-            }
-            .m-notice-slide .jc-urgent {
-                color: #FF8C42;
-                animation: jc-pulse 2s ease-in-out infinite;
-            }
-            @keyframes jc-pulse {
-                0%,100% { opacity: 1; }
-                50%      { opacity: 0.6; }
-            }
+            /* ══ JAMAAT CHANGE NOTICE ══ */
+            .m-notice-slide .jc-eyebrow { font-size: 9px; letter-spacing: 4px; text-transform: uppercase; color: #E8A030; font-weight: 800; flex-shrink: 0; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+            .m-notice-slide .jc-eyebrow::after { content: ''; flex: 1; height: 1px; background: linear-gradient(to right, rgba(232,160,48,0.5), transparent); }
+            .m-notice-slide .jc-divider { height: 1px; background: linear-gradient(to right, transparent, rgba(232,160,48,0.3), transparent); flex-shrink: 0; margin: 4px 0; }
+            .m-notice-slide .jc-day-header { font-size: 9px; letter-spacing: 3px; text-transform: uppercase; color: rgba(232,160,48,0.7); font-weight: 700; margin: 6px 0 3px; flex-shrink: 0; }
+            .m-notice-slide .jc-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 10px; background: rgba(232,160,48,0.07); border: 1px solid rgba(232,160,48,0.18); flex-shrink: 0; margin-bottom: 5px; }
+            .m-notice-slide .jc-icon { font-size: clamp(18px, 2vh, 26px); flex-shrink: 0; width: 30px; text-align: center; }
+            .m-notice-slide .jc-prayer { font-family: 'Cinzel Decorative', serif; font-size: clamp(12px, 1.5vh, 18px); color: #F5C842; font-weight: 700; flex: 1; white-space: nowrap; }
+            .m-notice-slide .jc-when { font-size: clamp(9px, 1.1vh, 13px); color: var(--cream-dim); font-style: italic; flex: 1; text-align: center; }
+            .m-notice-slide .jc-times { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+            .m-notice-slide .jc-from { font-size: clamp(14px, 1.8vh, 22px); font-weight: 600; color: var(--cream-dim); text-decoration: line-through; font-variant-numeric: tabular-nums; opacity: 0.7; }
+            .m-notice-slide .jc-arrow { font-size: clamp(14px, 1.8vh, 22px); color: #E8A030; font-weight: 700; }
+            .m-notice-slide .jc-to { font-size: clamp(16px, 2.1vh, 26px); font-weight: 800; color: #F5C842; font-variant-numeric: tabular-nums; letter-spacing: 1px; }
+            .m-notice-slide .jc-dir { font-size: clamp(9px, 1vh, 12px); font-weight: 700; padding: 2px 8px; border-radius: 20px; white-space: nowrap; flex-shrink: 0; }
+            .m-notice-slide .jc-dir.earlier { background: rgba(100,180,255,0.15); color: #8DC8F0; border: 1px solid rgba(100,180,255,0.25); }
+            .m-notice-slide .jc-dir.later { background: rgba(255,160,60,0.15); color: #FFAA44; border: 1px solid rgba(255,160,60,0.25); }
+            .m-notice-slide .jc-footer { font-size: clamp(11px, 1.3vh, 16px); font-weight: 700; color: #E8A030; text-align: center; flex-shrink: 0; margin-top: 4px; letter-spacing: 0.5px; }
+            .m-notice-slide .jc-urgent { color: #FF8C42; animation: jc-pulse 2s ease-in-out infinite; }
+            @keyframes jc-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
 
-            /* Override the notice card border to amber when showing change notice */
-            #m-notice-card.has-change-notice {
-                border-color: rgba(232,160,48,0.45) !important;
-            }
-            #m-notice-card.has-change-notice::before {
-                background: linear-gradient(to right, transparent, #E8A030, transparent) !important;
-            }
+            #m-notice-card.has-change-notice { border-color: rgba(232,160,48,0.45) !important; }
+            #m-notice-card.has-change-notice::before { background: linear-gradient(to right, transparent, #E8A030, transparent) !important; }
 
             /* ══ SIMULATOR PANEL ══ */
             #sim-panel {
-                position: fixed;
-                bottom: 20px; right: 20px;
-                width: 340px;
-                background: var(--bg-sim);
-                border: 1px solid var(--accent-brt);
-                border-radius: 14px;
-                z-index: 99999;
-                font-family: 'Nunito', sans-serif;
-                font-size: 12px;
-                color: var(--cream);
-                box-shadow: 0 8px 40px rgba(0,0,0,0.8), 0 0 0 1px var(--accent-faint);
-                transition: box-shadow 0.2s;
-                user-select: none;
-                cursor: default;
+                position: fixed; bottom: 20px; right: 20px; width: 340px; background: var(--bg-sim); border: 1px solid var(--accent-brt); border-radius: 14px; z-index: 99999;
+                font-family: 'Nunito', sans-serif; font-size: 12px; color: var(--cream); box-shadow: 0 8px 40px rgba(0,0,0,0.8), 0 0 0 1px var(--accent-faint); transition: box-shadow 0.2s; user-select: none; cursor: default;
             }
             #sim-panel.sim-dragging { box-shadow: 0 16px 60px rgba(0,0,0,0.9), 0 0 0 2px var(--gold); cursor: grabbing; }
-
-            /* Collapsed = mini floating bar — just header visible */
             #sim-panel.sim-collapsed { width: auto; min-width: 200px; border-radius: 30px; }
             #sim-panel.sim-collapsed #sim-body { display: none; }
             #sim-panel.sim-collapsed #sim-header { border-radius: 30px; border-bottom: none; padding: 8px 16px; }
 
-            #sim-header {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                padding: 10px 16px;
-                border-bottom: 1px solid var(--accent-shadow);
-                cursor: grab;
-                border-radius: 14px 14px 0 0;
-                background: var(--accent-faint);
-            }
+            #sim-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--accent-shadow); cursor: grab; border-radius: 14px 14px 0 0; background: var(--accent-faint); }
             #sim-header:active { cursor: grabbing; }
             .sim-header-left { display: flex; align-items: center; gap: 8px; }
             .sim-title { font-family: 'Cinzel Decorative', serif; font-size: 10px; color: var(--gold); letter-spacing: 2px; white-space: nowrap; }
-            .sim-badge {
-                background: rgba(100,100,100,0.8); color: #fff;
-                border-radius: 4px; padding: 1px 7px; font-size: 9px;
-                font-weight: 800; letter-spacing: 1px; white-space: nowrap;
-            }
+            .sim-badge { background: rgba(100,100,100,0.8); color: #fff; border-radius: 4px; padding: 1px 7px; font-size: 9px; font-weight: 800; letter-spacing: 1px; white-space: nowrap; }
             #sim-panel.sim-running .sim-badge { background: var(--green); }
-            #sim-collapse-btn {
-                font-size: 13px; color: var(--gold-dim); cursor: pointer;
-                padding: 2px 6px; margin-left: 4px; border-radius: 4px;
-                background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);
-                line-height: 1; flex-shrink: 0;
-            }
+            #sim-collapse-btn { font-size: 13px; color: var(--gold-dim); cursor: pointer; padding: 2px 6px; margin-left: 4px; border-radius: 4px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08); line-height: 1; flex-shrink: 0; }
             #sim-collapse-btn:hover { background: var(--accent-act); color: var(--gold); }
             #sim-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
             .sim-row { display: flex; flex-direction: column; gap: 4px; }
             .sim-label { font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: var(--gold-dim); }
             .sim-controls { display: flex; gap: 8px; align-items: center; }
-            .sim-input {
-                background: rgba(255,255,255,0.06);
-                border: 1px solid var(--accent-mod);
-                border-radius: 6px; color: var(--cream);
-                padding: 5px 8px; font-size: 12px; font-family: 'Nunito', sans-serif;
-                outline: none; width: 100%;
-            }
+            .sim-input { background: rgba(255,255,255,0.06); border: 1px solid var(--accent-mod); border-radius: 6px; color: var(--cream); padding: 5px 8px; font-size: 12px; font-family: 'Nunito', sans-serif; outline: none; width: 100%; }
             .sim-input:focus { border-color: var(--gold); }
-            .sim-speed-btn {
-                background: rgba(255,255,255,0.05);
-                border: 1px solid var(--accent-shadow);
-                border-radius: 6px; color: var(--cream-dim);
-                padding: 4px 10px; font-size: 11px; cursor: pointer;
-                font-family: 'Nunito', sans-serif; transition: all 0.15s;
-            }
+            .sim-speed-btn { background: rgba(255,255,255,0.05); border: 1px solid var(--accent-shadow); border-radius: 6px; color: var(--cream-dim); padding: 4px 10px; font-size: 11px; cursor: pointer; font-family: 'Nunito', sans-serif; transition: all 0.15s; }
             .sim-speed-btn:hover { border-color: var(--gold); color: var(--gold); }
             .sim-speed-btn.active { background: var(--accent-act); border-color: var(--gold); color: var(--gold); font-weight: 800; }
             .sim-divider { height: 1px; background: var(--accent-subtle); }
             .sim-scenario-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-            .sim-scenario-btn {
-                background: rgba(255,255,255,0.04);
-                border: 1px solid var(--accent-subtle);
-                border-radius: 6px; color: var(--cream-dim);
-                padding: 5px 8px; font-size: 10px; cursor: pointer;
-                font-family: 'Nunito', sans-serif; text-align: center;
-                transition: all 0.15s; line-height: 1.3;
-            }
+            .sim-scenario-btn { background: rgba(255,255,255,0.04); border: 1px solid var(--accent-subtle); border-radius: 6px; color: var(--cream-dim); padding: 5px 8px; font-size: 10px; cursor: pointer; font-family: 'Nunito', sans-serif; text-align: center; transition: all 0.15s; line-height: 1.3; }
             .sim-scenario-btn:hover { border-color: var(--gold-dim); color: var(--cream); background: var(--accent-faint); }
             .sim-action-row { display: flex; gap: 8px; }
-            .sim-btn {
-                flex: 1; padding: 7px 10px; border-radius: 8px; font-size: 11px;
-                font-family: 'Nunito', sans-serif; font-weight: 700;
-                cursor: pointer; border: none; transition: all 0.15s; letter-spacing: 0.5px;
-            }
+            .sim-btn { flex: 1; padding: 7px 10px; border-radius: 8px; font-size: 11px; font-family: 'Nunito', sans-serif; font-weight: 700; cursor: pointer; border: none; transition: all 0.15s; letter-spacing: 0.5px; }
             .sim-btn-primary { background: var(--gold); color: var(--green-dark); }
             .sim-btn-primary:hover { background: var(--gold-light); }
             .sim-btn-secondary { background: rgba(255,255,255,0.07); color: var(--cream-dim); border: 1px solid rgba(255,255,255,0.12); }
             .sim-btn-secondary:hover { background: rgba(255,255,255,0.12); color: var(--cream); }
             .sim-btn-danger { background: rgba(192,57,43,0.3); color: #E07070; border: 1px solid rgba(192,57,43,0.4); }
             .sim-btn-danger:hover { background: rgba(192,57,43,0.5); }
-            #sim-clock-display {
-                font-size: 22px; font-weight: 800; color: var(--gold-light);
-                font-variant-numeric: tabular-nums; letter-spacing: 3px; text-align: center;
-                padding: 6px 0; border: 1px solid var(--accent-shadow);
-                border-radius: 8px; background: var(--accent-act2);
-            }
+            #sim-clock-display { font-size: 22px; font-weight: 800; color: var(--gold-light); font-variant-numeric: tabular-nums; letter-spacing: 3px; text-align: center; padding: 6px 0; border: 1px solid var(--accent-shadow); border-radius: 8px; background: var(--accent-act2); }
             #sim-status { font-size: 10px; color: var(--cream-dim); text-align: center; min-height: 14px; }
-
             .m-no-data { display: flex; align-items: center; justify-content: center; height: 100vh; font-size: 28px; color: var(--red-soft); text-align: center; padding: 40px; }
 
             /* ══ ZAWAAL OVERLAY ══ */
-            #zawaal-overlay {
-                position: fixed;
-                inset: 0;
-                z-index: 9999;
-                display: none;                       /* hidden by default; JS controls visibility */
-                pointer-events: none;
-                /* Red hue layer */
-                background: rgba(120, 0, 0, 0.55);
-                /* Smooth fade in/out via opacity transition */
-                opacity: 0;
-                transition: opacity 1.2s ease;
-            }
-            #zawaal-overlay.zawaal-active {
-                display: flex;
-                opacity: 1;
-            }
-            /* Watermark text centred across the full screen */
-            #zawaal-overlay::before {
-                content: 'WARNING\A ZAWAAL';
-                white-space: pre;
-                position: absolute;
-                inset: 0;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-family: 'Cinzel Decorative', serif;
-                font-size: clamp(80px, 12vw, 180px);
-                font-weight: 700;
-                color: rgba(255, 80, 80, 0.18);
-                text-align: center;
-                line-height: 1.15;
-                letter-spacing: 12px;
-                text-transform: uppercase;
-                pointer-events: none;
-                /* Slow breathe pulse */
-                animation: zawaal-pulse 3s ease-in-out infinite;
-            }
-            @keyframes zawaal-pulse {
-                0%,100% { color: rgba(255, 80, 80, 0.14); }
-                50%      { color: rgba(255, 80, 80, 0.26); }
-            }
-            /* Small label strip at the top of the overlay */
-            #zawaal-label {
-                position: absolute;
-                top: 0; left: 0; right: 0;
-                background: rgba(160, 0, 0, 0.75);
-                border-bottom: 2px solid rgba(255,100,100,0.5);
-                text-align: center;
-                padding: 10px 0;
-                font-family: 'Cinzel Decorative', serif;
-                font-size: clamp(16px, 2vw, 28px);
-                font-weight: 700;
-                letter-spacing: 6px;
-                color: rgba(255,200,200,0.95);
-                text-transform: uppercase;
-            }
+            #zawaal-overlay { position: fixed; inset: 0; z-index: 9999; display: none; pointer-events: none; background: rgba(120, 0, 0, 0.55); opacity: 0; transition: opacity 1.2s ease; }
+            #zawaal-overlay.zawaal-active { display: flex; opacity: 1; }
+            #zawaal-overlay::before { content: 'WARNING\A ZAWAAL'; white-space: pre; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: 'Cinzel Decorative', serif; font-size: clamp(80px, 12vw, 180px); font-weight: 700; color: rgba(255, 80, 80, 0.18); text-align: center; line-height: 1.15; letter-spacing: 12px; text-transform: uppercase; pointer-events: none; animation: zawaal-pulse 3s ease-in-out infinite; }
+            @keyframes zawaal-pulse { 0%,100% { color: rgba(255, 80, 80, 0.14); } 50% { color: rgba(255, 80, 80, 0.26); } }
+            #zawaal-label { position: absolute; top: 0; left: 0; right: 0; background: rgba(160, 0, 0, 0.75); border-bottom: 2px solid rgba(255,100,100,0.5); text-align: center; padding: 10px 0; font-family: 'Cinzel Decorative', serif; font-size: clamp(16px, 2vw, 28px); font-weight: 700; letter-spacing: 6px; color: rgba(255,200,200,0.95); text-transform: uppercase; }
         </style>
         <?php echo $_nmc_theme_css; ?>
     </head>
     <body>
 
-    <!-- ── Zawaal Warning Overlay ── -->
     <div id="zawaal-overlay">
         <div id="zawaal-label">⚠️ &nbsp; Zawaal &nbsp; — &nbsp; Prayer is Makrooh &nbsp; ⚠️</div>
     </div>
 
     <?php if ($sim_active): ?>
-        <!-- ══ DEBUG SIM TOOL (superadmin only) ══ -->
         <div id="sim-panel" class="sim-collapsed">
-            <div id="sim-header">
-                <div class="sim-header-left">
-                    <span style="font-size:16px;">🧪</span>
-                    <span class="sim-title">Debug Sim Tool</span>
-                    <span class="sim-badge" id="sim-badge">PAUSED</span>
-                </div>
-                <button id="sim-collapse-btn" onclick="simToggleCollapse(event)" title="Expand/Collapse">▲</button>
+        <div id="sim-header">
+            <div class="sim-header-left">
+                <span style="font-size:16px;">🧪</span>
+                <span class="sim-title">Debug Sim Tool</span>
+                <span class="sim-badge" id="sim-badge">PAUSED</span>
             </div>
-            <div id="sim-body">
+            <button id="sim-collapse-btn" onclick="simToggleCollapse(event)" title="Expand/Collapse">▲</button>
+        </div>
+        <div id="sim-body">
 
-                <!-- Live sim clock -->
-                <div id="sim-clock-display">--:--:--</div>
-                <div id="sim-status">Loading…</div>
+            <div id="sim-clock-display">--:--:--</div>
+            <div id="sim-status">Loading…</div>
 
-                <div class="sim-divider"></div>
+            <div class="sim-divider"></div>
 
-                <!-- Date picker -->
-                <div class="sim-row">
-                    <span class="sim-label">📅 Simulate Date</span>
-                    <input type="date" class="sim-input" id="sim-date-input"
-                           value="<?= htmlspecialchars(date('Y-m-d', $sim_ts), ENT_QUOTES) ?>">
+            <div class="sim-row">
+                <span class="sim-label">📅 Simulate Date</span>
+                <input type="date" class="sim-input" id="sim-date-input"
+                       value="<?= htmlspecialchars(date('Y-m-d', $sim_ts), ENT_QUOTES) ?>">
+            </div>
+
+            <div class="sim-row">
+                <span class="sim-label">🕐 Simulate Time</span>
+                <div class="sim-controls">
+                    <input type="range" id="sim-slider" min="0" max="86399" step="60"
+                           value="<?= (function($t){ $p=explode(':',$t); return (int)$p[0]*3600+(int)$p[1]*60+(isset($p[2])?(int)$p[2]:0); })($sim_time) ?>"
+                           style="flex:1;accent-color:var(--gold);"
+                           oninput="simSliderMove(this.value)">
+                    <input type="text" class="sim-input" id="sim-time-input"
+                           value="<?= substr($sim_time,0,5) ?>"
+                           style="width:68px;text-align:center;"
+                           oninput="simTimeTextChange(this.value)">
                 </div>
+            </div>
 
-                <!-- Time scrubber -->
-                <div class="sim-row">
-                    <span class="sim-label">🕐 Simulate Time</span>
-                    <div class="sim-controls">
-                        <input type="range" id="sim-slider" min="0" max="86399" step="60"
-                               value="<?= (function($t){ $p=explode(':',$t); return (int)$p[0]*3600+(int)$p[1]*60+(isset($p[2])?(int)$p[2]:0); })($sim_time) ?>"
-                               style="flex:1;accent-color:var(--gold);"
-                               oninput="simSliderMove(this.value)">
-                        <input type="text" class="sim-input" id="sim-time-input"
-                               value="<?= substr($sim_time,0,5) ?>"
-                               style="width:68px;text-align:center;"
-                               oninput="simTimeTextChange(this.value)">
-                    </div>
+            <div class="sim-row">
+                <span class="sim-label">⚡ Speed</span>
+                <div class="sim-controls" id="sim-speed-btns">
+                    <button class="sim-speed-btn active" data-speed="1"   onclick="simSetSpeed(1)">1×</button>
+                    <button class="sim-speed-btn"        data-speed="5"   onclick="simSetSpeed(5)">5×</button>
+                    <button class="sim-speed-btn"        data-speed="30"  onclick="simSetSpeed(30)">30×</button>
+                    <button class="sim-speed-btn"        data-speed="60"  onclick="simSetSpeed(60)">60×</button>
+                    <button class="sim-speed-btn"        data-speed="300" onclick="simSetSpeed(300)">300×</button>
                 </div>
+            </div>
 
-                <!-- Speed -->
-                <div class="sim-row">
-                    <span class="sim-label">⚡ Speed</span>
-                    <div class="sim-controls" id="sim-speed-btns">
-                        <button class="sim-speed-btn active" data-speed="1"   onclick="simSetSpeed(1)">1×</button>
-                        <button class="sim-speed-btn"        data-speed="5"   onclick="simSetSpeed(5)">5×</button>
-                        <button class="sim-speed-btn"        data-speed="30"  onclick="simSetSpeed(30)">30×</button>
-                        <button class="sim-speed-btn"        data-speed="60"  onclick="simSetSpeed(60)">60×</button>
-                        <button class="sim-speed-btn"        data-speed="300" onclick="simSetSpeed(300)">300×</button>
-                    </div>
+            <div class="sim-divider"></div>
+
+            <div class="sim-row">
+                <span class="sim-label">🎯 Quick Scenarios</span>
+                <div class="sim-scenario-grid">
+                    <button class="sim-scenario-btn" onclick="simScenario('fajr_window')">🌅 Fajr Opens</button>
+                    <button class="sim-scenario-btn" onclick="simScenario('zawaal')">🔴 Zawaal</button>
+                    <button class="sim-scenario-btn" onclick="simScenario('zuhr_window')">☀️ Zuhr Opens</button>
+                    <button class="sim-scenario-btn" onclick="simScenario('asr_window')">🌤️ Asr Opens</button>
+                    <button class="sim-scenario-btn" onclick="simScenario('maghrib_window')">🌇 Maghrib Opens</button>
+                    <button class="sim-scenario-btn" onclick="simScenario('esha_window')">🌃 Esha Opens</button>
+                    <button class="sim-scenario-btn" onclick="simScenario('thu_maghrib')">🕌 Thu→Jummah</button>
+                    <button class="sim-scenario-btn" onclick="simScenario('fri_zuhr')">🕌 Fri Zuhr Now</button>
                 </div>
+            </div>
 
-                <div class="sim-divider"></div>
+            <div class="sim-divider"></div>
 
-                <!-- Quick scenarios -->
-                <div class="sim-row">
-                    <span class="sim-label">🎯 Quick Scenarios</span>
-                    <div class="sim-scenario-grid">
-                        <button class="sim-scenario-btn" onclick="simScenario('fajr_window')">🌅 Fajr Opens</button>
-                        <button class="sim-scenario-btn" onclick="simScenario('zawaal')">🔴 Zawaal</button>
-                        <button class="sim-scenario-btn" onclick="simScenario('zuhr_window')">☀️ Zuhr Opens</button>
-                        <button class="sim-scenario-btn" onclick="simScenario('asr_window')">🌤️ Asr Opens</button>
-                        <button class="sim-scenario-btn" onclick="simScenario('maghrib_window')">🌇 Maghrib Opens</button>
-                        <button class="sim-scenario-btn" onclick="simScenario('esha_window')">🌃 Esha Opens</button>
-                        <button class="sim-scenario-btn" onclick="simScenario('thu_maghrib')">🕌 Thu→Jummah</button>
-                        <button class="sim-scenario-btn" onclick="simScenario('fri_zuhr')">🕌 Fri Zuhr Now</button>
-                    </div>
-                </div>
+            <div class="sim-action-row">
+                <button class="sim-btn sim-btn-primary"   onclick="simApply()">▶ Apply</button>
+                <button class="sim-btn sim-btn-secondary" onclick="simPause()" id="sim-pause-btn">⏸ Pause</button>
+                <button class="sim-btn sim-btn-danger"    onclick="simExit()">✕ Exit</button>
+            </div>
 
-                <div class="sim-divider"></div>
-
-                <!-- Actions -->
-                <div class="sim-action-row">
-                    <button class="sim-btn sim-btn-primary"   onclick="simApply()">▶ Apply</button>
-                    <button class="sim-btn sim-btn-secondary" onclick="simPause()" id="sim-pause-btn">⏸ Pause</button>
-                    <button class="sim-btn sim-btn-danger"    onclick="simExit()">✕ Exit</button>
-                </div>
-
-            </div><!-- /sim-body -->
-        </div><!-- /sim-panel -->
-    <?php endif; ?>
+        </div></div><?php endif; ?>
 
     <?php if ($times): ?>
         <div class="drift-wrap">
@@ -1877,223 +1706,447 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
             </div>
         </div>
 
-        <div class="m-prayers">
+        <?php if ($musjid_layout === 'musjid2'): ?>
+            <div class="m2-middle">
+                <div class="m2-col">
+                    <div class="m2-prayers-grid">
+                        <div class="m2-prayer-card" id="m-card-Fajr" data-col="Fajr">
+                            <div class="m-pill-row" data-col="Fajr"><span class="m-status-pill" id="m-pill-Fajr"></span></div>
+                            <span class="m-prayer-icon" data-col="Fajr">🌅</span>
+                            <div class="m-prayer-name" data-col="Fajr">Fajr</div>
+                            <div class="m-prayer-desc" data-col="Fajr">Dawn Prayer</div>
+                            <div class="m-jamaat-label" data-col="Fajr">Jamaat</div>
+                            <div class="m-jamaat-time" data-col="Fajr"><?= $times['fajr'] ?></div>
+                            <div class="m-earliest-primary" data-col="Fajr">
+                                <div class="m-prayer-divider"></div>
+                                <div class="m-earliest-block">
+                                    <div class="m-earliest-label">Earliest</div>
+                                    <div class="m-earliest-time"><?= $times['fajr_e'] ?></div>
+                                </div>
+                            </div>
+                            <div class="m-shafi-spacer" data-col="Fajr"></div>
+                        </div>
 
-            <div class="m-prayer-col" id="m-card-Fajr" style="grid-column:1;" data-col="Fajr">
-                <div class="m-col-bg" style="grid-column:1;" data-col="Fajr"></div>
-                <div class="m-pill-row" style="grid-column:1;" data-col="Fajr"><span class="m-status-pill" id="m-pill-Fajr"></span></div>
-                <span class="m-prayer-icon" style="grid-column:1;" data-col="Fajr">🌅</span>
-                <div class="m-prayer-name" style="grid-column:1;" data-col="Fajr">Fajr</div>
-                <div class="m-prayer-desc" style="grid-column:1;" data-col="Fajr">Dawn Prayer</div>
-                <div class="m-jamaat-label" style="grid-column:1;" data-col="Fajr">Jamaat</div>
-                <div class="m-jamaat-time" style="grid-column:1;" data-col="Fajr"><?= $times['fajr'] ?></div>
-                <div class="m-earliest-primary" style="grid-column:1;" data-col="Fajr">
-                    <div class="m-prayer-divider"></div>
-                    <div class="m-earliest-block">
-                        <div class="m-earliest-label">Earliest</div>
-                        <div class="m-earliest-time"><?= $times['fajr_e'] ?></div>
+                        <div class="m2-prayer-card" id="m-card-Zuhr" data-col="Zuhr">
+                            <div class="m-pill-row" data-col="Zuhr"><span class="m-status-pill" id="m-pill-Zuhr"></span></div>
+                            <span class="m-prayer-icon" data-col="Zuhr" id="m-icon-Zuhr">☀️</span>
+                            <div class="m-prayer-name" data-col="Zuhr" id="m-name-Zuhr">Zuhr</div>
+                            <div class="m-prayer-desc" data-col="Zuhr" id="m-desc-Zuhr">Midday Prayer</div>
+                            <div class="m-jamaat-label" data-col="Zuhr">Jamaat</div>
+                            <div class="m-jamaat-time" data-col="Zuhr" id="m-jtime-Zuhr"><?= $times['zuhr'] ?></div>
+
+                            <div id="m-jum-talk" style="display:none; flex:1; flex-direction:column; justify-content:center; align-items:center; text-align:center; width:100%; padding:0 10px;"></div>
+
+                            <div class="m-earliest-primary" data-col="Zuhr" id="m-earliest-Zuhr">
+                                <div class="m-prayer-divider"></div>
+                                <div class="m-earliest-block" id="m-zuhr-earliest-block">
+                                    <div class="m-earliest-label">Earliest</div>
+                                    <div class="m-earliest-time"><?= $times['zuhr_e'] ?></div>
+                                </div>
+                                <div id="m-jum-earliest" style="display:none;width:100%;">
+                                    <div class="m-earliest-block">
+                                        <div class="m-earliest-label">Earliest</div>
+                                        <div class="m-earliest-time"><?= $times['zuhr_e'] ?></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="m-earliest-shafi" style="display:none;" data-col="Zuhr" id="m-jum-pills">
+                                <div style="display:flex;gap:4px;width:100%;height:100%;">
+                                    <div class="m-earliest-block" style="flex:1;">
+                                        <div class="m-earliest-label">Azaan</div>
+                                        <div class="m-earliest-time" id="m-jum-azaan"><?= $jummah['azaan'] ?></div>
+                                    </div>
+                                    <div class="m-earliest-block" style="flex:1;">
+                                        <div class="m-earliest-label">Khutbah</div>
+                                        <div class="m-earliest-time" id="m-jum-khutbah"><?= $jummah['khutbah'] ?></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="m2-prayer-card" id="m-card-Maghrib" data-col="Maghrib">
+                            <div class="m-pill-row" data-col="Maghrib"><span class="m-status-pill" id="m-pill-Maghrib"></span></div>
+                            <span class="m-prayer-icon" data-col="Maghrib">🌇</span>
+                            <div class="m-prayer-name" data-col="Maghrib">Maghrib</div>
+                            <div class="m-prayer-desc" data-col="Maghrib">Sunset Prayer</div>
+                            <div class="m-jamaat-label" data-col="Maghrib">Jamaat</div>
+                            <div class="m-jamaat-time" data-col="Maghrib"><?= $times['maghrib'] ?></div>
+                            <div class="m-earliest-primary" data-col="Maghrib">
+                                <div class="m-prayer-divider"></div>
+                                <div class="m-earliest-block" style="visibility: hidden;">
+                                    <div class="m-earliest-label">-</div>
+                                    <div class="m-earliest-time">-</div>
+                                </div>
+                            </div>
+                            <div class="m-shafi-spacer" data-col="Maghrib"></div>
+                        </div>
+
+                        <div class="m2-prayer-card" id="m-card-Esha" data-col="Esha">
+                            <div class="m-pill-row" data-col="Esha"><span class="m-status-pill" id="m-pill-Esha"></span></div>
+                            <span class="m-prayer-icon" data-col="Esha">🌃</span>
+                            <div class="m-prayer-name" data-col="Esha">Esha</div>
+                            <div class="m-prayer-desc" data-col="Esha">Night Prayer</div>
+                            <div class="m-jamaat-label" data-col="Esha">Jamaat</div>
+                            <div class="m-jamaat-time" data-col="Esha"><?= $times['esha'] ?></div>
+                            <div class="m-earliest-primary" data-col="Esha">
+                                <div class="m-prayer-divider"></div>
+                                <div class="m-earliest-block">
+                                    <div class="m-earliest-label">Earliest</div>
+                                    <div class="m-earliest-time"><?= $times['esha_e'] ?></div>
+                                </div>
+                            </div>
+                            <div class="m-shafi-spacer" data-col="Esha"></div>
+                        </div>
+                    </div>
+
+                    <div class="m-mid-card m-hadith-card" style="flex: 1;">
+                        <div class="m-hadith-top">
+                            <span class="m-hadith-eyebrow">📖 Hadith of the Day</span>
+                            <span class="m-hadith-day">Day <?= $day_number ?> of 365</span>
+                        </div>
+                        <?php if ($musjid_hadith_text):
+                            $first_paren = strpos($musjid_hadith_text, '(');
+                            if ($first_paren !== false) {
+                                $hadith_main   = trim(substr($musjid_hadith_text, 0, $first_paren));
+                                $hadith_source = trim(substr($musjid_hadith_text, $first_paren));
+                            } else {
+                                $hadith_main   = $musjid_hadith_text;
+                                $hadith_source = null;
+                            }
+                            ?>
+                            <div class="m-hadith-text" id="m-hadith-text">
+                                <div class="m-hadith-text-inner" id="m-hadith-inner">
+                                    <span class="m-hadith-main" id="m-hadith-main"><?= nl2br(htmlspecialchars($hadith_main, ENT_QUOTES)) ?></span>
+                                    <?php if ($hadith_source): ?>
+                                        <span class="m-hadith-source" id="m-hadith-source"><?= htmlspecialchars($hadith_source, ENT_QUOTES) ?></span>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                        <?php else: ?>
+                            <div class="m-hadith-text" style="opacity:0.4;font-family:'Nunito',sans-serif;font-size:13px;">No hadith found for today</div>
+                        <?php endif; ?>
                     </div>
                 </div>
-                <div class="m-shafi-spacer" style="grid-column:1;" data-col="Fajr"></div>
+
+                <div class="m2-col">
+                    <div class="m2-prayers-grid" style="grid-template-columns: 1fr;">
+                        <div class="m2-prayer-card" id="m-card-Asr" data-col="Asr">
+                            <div class="m-pill-row" data-col="Asr"><span class="m-status-pill" id="m-pill-Asr"></span></div>
+                            <span class="m-prayer-icon" data-col="Asr">🌤️</span>
+                            <div class="m-prayer-name" data-col="Asr">Asr</div>
+                            <div class="m-prayer-desc" data-col="Asr">Afternoon Prayer</div>
+                            <div class="m-jamaat-label" data-col="Asr">Jamaat</div>
+                            <div class="m-jamaat-time" data-col="Asr"><?= $times['asr'] ?></div>
+                            <div class="m-earliest-primary" data-col="Asr">
+                                <div class="m-prayer-divider"></div>
+                                <div class="m-earliest-block">
+                                    <div class="m-earliest-label">Earliest Hanafi</div>
+                                    <div class="m-earliest-time"><?= $times['asr_eh'] ?></div>
+                                </div>
+                            </div>
+                            <div class="m-earliest-shafi" data-col="Asr">
+                                <div class="m-earliest-block">
+                                    <div class="m-earliest-label">Earliest Shafi</div>
+                                    <div class="m-earliest-time"><?= $times['asr_es'] ?></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="m-mid-card m-funeral-card" id="m-funeral-card" style="flex: 1;">
+                        <div class="m-funeral-eyebrow">◆ Funeral Notice</div>
+                        <?php
+                        $active_funerals = array_filter($musjid_funeral_list, fn($f) => $f !== null);
+                        if (empty($active_funerals)):
+                            ?>
+                            <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:10px;">
+                                <div class="m-funeral-heading">No Active Funeral Notices</div>
+                                <div class="m-funeral-body" style="font-size:clamp(11px,1.2vh,15px);">No funeral announcements at this time.<br>May Allāh grant all the deceased Jannatul Firdaus. Āmeen.</div>
+                                <div style="font-size:clamp(14px,1.6vh,20px);color:var(--gold);font-family:'Amiri',serif;margin-top:6px;direction:rtl;">إِنَّا لِلَّٰهِ وَإِنَّا إِلَيْهِ رَاجِعُونَ</div>
+                            </div>
+                        <?php else: ?>
+                            <?php foreach (array_values($active_funerals) as $fidx => $fn): ?>
+                                <div class="m-funeral-slide" id="m-funeral-<?= $fidx ?>" style="<?= $fidx > 0 ? 'display:none;' : 'display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;' ?>">
+                                    <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:8px;padding:4px 0;">
+                                        <div class="m-funeral-heading" style="font-size:clamp(16px,2vh,24px);"><?= htmlspecialchars($fn['deceased_name'], ENT_QUOTES) ?></div>
+                                        <?php if ($fn['family_details']): ?>
+                                            <div style="font-size:clamp(10px,1.1vh,14px);color:rgba(200,180,138,0.75);line-height:1.4;"><?= htmlspecialchars($fn['family_details'], ENT_QUOTES) ?></div>
+                                        <?php endif; ?>
+                                        <div style="width:60%;height:1px;background:var(--accent-mod);margin:4px auto;"></div>
+                                        <div style="font-size:clamp(11px,1.25vh,15px);color:var(--cream);line-height:1.7;">
+                                            <?php if ($fn['leave_from']): ?><div>🏠 <strong>Leaves from:</strong> <?= htmlspecialchars($fn['leave_from'], ENT_QUOTES) ?><?= $fn['departure_time'] ? ' at <strong>' . htmlspecialchars($fn['departure_time'], ENT_QUOTES) . '</strong>' : '' ?></div><?php endif; ?>
+                                            <?php if ($fn['janazah_location']): ?><div>🕌 <strong>Janazah:</strong> <?= htmlspecialchars($fn['janazah_location'], ENT_QUOTES) ?><?= $fn['janazah_time'] ? ' at <strong>' . htmlspecialchars($fn['janazah_time'], ENT_QUOTES) . '</strong>' : '' ?></div><?php endif; ?>
+                                            <?php if ($fn['proceeding_to']): ?><div>⚰️ <strong>Proceeding to:</strong> <?= htmlspecialchars($fn['proceeding_to'], ENT_QUOTES) ?></div><?php endif; ?>
+                                            <?php if ($fn['funeral_date_en']): ?><div style="font-size:clamp(10px,1.1vh,13px);color:var(--cream-dim);margin-top:2px;">📅 <?= htmlspecialchars($fn['funeral_date_en'], ENT_QUOTES) ?><?= $fn['funeral_date_hijri'] ? ' · ' . htmlspecialchars($fn['funeral_date_hijri'], ENT_QUOTES) : '' ?></div><?php endif; ?>
+                                        </div>
+                                        <div style="font-size:clamp(13px,1.5vh,18px);color:var(--gold);font-family:'Amiri',serif;margin-top:6px;direction:rtl;">إِنَّا لِلَّٰهِ وَإِنَّا إِلَيْهِ رَاجِعُونَ</div>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <div class="m2-col">
+                    <div class="m-mid-card m-notice-card<?= ($has_changes && ($musjid_community_msgs[0]['_jamaat_notice'] ?? false)) ? ' has-change-notice' : '' ?>" id="m-notice-card" style="flex: 1;">
+                        <div class="m-slide-progress" id="m-slide-progress">
+                            <div class="m-slide-progress-bar" id="m-slide-progress-bar"></div>
+                        </div>
+                        <?php foreach ($musjid_community_msgs as $idx => $cm): ?>
+                            <?php $isImg = ($cm['content_type'] === 'image' && !empty($cm['media_id'])); ?>
+                            <?php $isJamaatNotice = !empty($cm['_jamaat_notice']); ?>
+                            <div class="m-notice-slide" id="m-notice-<?= $idx ?>" style="<?= $idx > 0 ? 'display:none;' : 'display:flex;' ?>flex-direction:column;<?= $isImg ? 'position:absolute;inset:0;' : 'flex:1;width:100%;overflow:hidden;' ?>">
+                                <?php if ($isJamaatNotice): ?>
+                                    <div style="display:flex;flex-direction:column;width:100%;flex:1;padding:14px 20px 12px;overflow:hidden;min-height:0;">
+                                        <?= $cm['content_html'] ?>
+                                    </div>
+                                <?php elseif ($isImg): ?>
+                                    <div style="flex-shrink:0;padding:8px 14px 5px;background:rgba(0,0,0,0.45);position:relative;z-index:1;">
+                                        <div class="m-notice-eyebrow" style="margin-bottom:3px;">📢 Community Notice</div>
+                                        <?php if (!empty($cm['title'])): ?>
+                                            <div class="m-notice-heading" style="margin-bottom:3px;"><?= htmlspecialchars($cm['title'], ENT_QUOTES) ?></div>
+                                        <?php endif; ?>
+                                    </div>
+                                    <div style="flex:1;min-height:0;">
+                                        <img src="index.php?action=img&id=<?= (int)$cm['media_id'] ?>"
+                                             style="width:100%;height:100%;display:block;<?= $cm['image_fit'] === 'fill' ? '' : 'object-fit:'.htmlspecialchars($cm['image_fit'],ENT_QUOTES).';' ?>">
+                                    </div>
+                                <?php else: /* html/text content */ ?>
+                                    <?php if (!empty($cm['title'])): ?>
+                                        <div class="m-notice-eyebrow" style="padding:14px 20px 0;">📢 Community Notice</div>
+                                        <div class="m-notice-heading" style="padding:0 20px;"><?= htmlspecialchars($cm['title'], ENT_QUOTES) ?></div>
+                                    <?php else: ?>
+                                        <div class="m-notice-eyebrow" style="padding:14px 20px 0;">📢 Community Notice</div>
+                                    <?php endif; ?>
+                                    <div class="m-notice-body" style="flex:1;overflow:hidden;padding:0 20px 12px;"><?= $cm['content_html'] ?></div>
+                                <?php endif; ?>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
             </div>
 
-            <div class="m-prayer-col" id="m-card-Zuhr" style="grid-column:2;" data-col="Zuhr">
-                <div class="m-col-bg" style="grid-column:2;" data-col="Zuhr"></div>
-                <div class="m-pill-row" style="grid-column:2;" data-col="Zuhr"><span class="m-status-pill" id="m-pill-Zuhr"></span></div>
-                <span class="m-prayer-icon" style="grid-column:2;" data-col="Zuhr" id="m-icon-Zuhr">☀️</span>
-                <div class="m-prayer-name" style="grid-column:2;" data-col="Zuhr" id="m-name-Zuhr">Zuhr</div>
-                <div class="m-prayer-desc" style="grid-column:2;" data-col="Zuhr" id="m-desc-Zuhr">Midday Prayer</div>
-                <div class="m-jamaat-label" style="grid-column:2;" data-col="Zuhr">Jamaat</div>
-                <div class="m-jamaat-time" style="grid-column:2;" data-col="Zuhr" id="m-jtime-Zuhr"><?= $times['zuhr'] ?></div>
-                <div class="m-earliest-primary" style="grid-column:2;" data-col="Zuhr" id="m-earliest-Zuhr">
-                    <div class="m-prayer-divider"></div>
-                    <!-- Normal (non-Jummah): single Earliest block -->
-                    <div class="m-earliest-block" id="m-zuhr-earliest-block">
-                        <div class="m-earliest-label">Earliest</div>
-                        <div class="m-earliest-time"><?= $times['zuhr_e'] ?></div>
-                    </div>
-                    <!-- Jummah: Earliest only (full width) — Azaan+Khutbah go in e-shafi row below -->
-                    <div id="m-jum-earliest" style="display:none;width:100%;">
+        <?php else: ?>
+            <div class="m-prayers">
+
+                <div class="m-prayer-col" id="m-card-Fajr" style="grid-column:1;" data-col="Fajr">
+                    <div class="m-col-bg" style="grid-column:1;" data-col="Fajr"></div>
+                    <div class="m-pill-row" style="grid-column:1;" data-col="Fajr"><span class="m-status-pill" id="m-pill-Fajr"></span></div>
+                    <span class="m-prayer-icon" style="grid-column:1;" data-col="Fajr">🌅</span>
+                    <div class="m-prayer-name" style="grid-column:1;" data-col="Fajr">Fajr</div>
+                    <div class="m-prayer-desc" style="grid-column:1;" data-col="Fajr">Dawn Prayer</div>
+                    <div class="m-jamaat-label" style="grid-column:1;" data-col="Fajr">Jamaat</div>
+                    <div class="m-jamaat-time" style="grid-column:1;" data-col="Fajr"><?= $times['fajr'] ?></div>
+                    <div class="m-earliest-primary" style="grid-column:1;" data-col="Fajr">
+                        <div class="m-prayer-divider"></div>
                         <div class="m-earliest-block">
+                            <div class="m-earliest-label">Earliest</div>
+                            <div class="m-earliest-time"><?= $times['fajr_e'] ?></div>
+                        </div>
+                    </div>
+                    <div class="m-shafi-spacer" style="grid-column:1;" data-col="Fajr"></div>
+                </div>
+
+                <div class="m-prayer-col" id="m-card-Zuhr" style="grid-column:2;" data-col="Zuhr">
+                    <div class="m-col-bg" style="grid-column:2;" data-col="Zuhr"></div>
+                    <div class="m-pill-row" style="grid-column:2;" data-col="Zuhr"><span class="m-status-pill" id="m-pill-Zuhr"></span></div>
+                    <span class="m-prayer-icon" style="grid-column:2;" data-col="Zuhr" id="m-icon-Zuhr">☀️</span>
+                    <div class="m-prayer-name" style="grid-column:2;" data-col="Zuhr" id="m-name-Zuhr">Zuhr</div>
+                    <div class="m-prayer-desc" style="grid-column:2;" data-col="Zuhr" id="m-desc-Zuhr">Midday Prayer</div>
+                    <div class="m-jamaat-label" style="grid-column:2;" data-col="Zuhr">Jamaat</div>
+                    <div class="m-jamaat-time" style="grid-column:2;" data-col="Zuhr" id="m-jtime-Zuhr"><?= $times['zuhr'] ?></div>
+
+                    <div id="m-jum-talk" style="display:none; grid-column:2; grid-row:talk; flex-direction:column; justify-content:center; align-items:center; text-align:center; padding-top:10px;"></div>
+
+                    <div class="m-earliest-primary" style="grid-column:2;" data-col="Zuhr" id="m-earliest-Zuhr">
+                        <div class="m-prayer-divider"></div>
+                        <div class="m-earliest-block" id="m-zuhr-earliest-block">
                             <div class="m-earliest-label">Earliest</div>
                             <div class="m-earliest-time"><?= $times['zuhr_e'] ?></div>
                         </div>
-                    </div>
-                </div>
-                <!-- e-shafi row for Zuhr: Azaan+Khutbah side by side (shown on Jummah, hidden otherwise) -->
-                <div class="m-earliest-shafi" style="grid-column:2;display:none;" data-col="Zuhr" id="m-jum-pills">
-                    <div style="display:flex;gap:4px;width:100%;height:100%;">
-                        <div class="m-earliest-block" style="flex:1;">
-                            <div class="m-earliest-label">Azaan</div>
-                            <div class="m-earliest-time" id="m-jum-azaan"><?= $jummah['azaan'] ?></div>
-                        </div>
-                        <div class="m-earliest-block" style="flex:1;">
-                            <div class="m-earliest-label">Khutbah</div>
-                            <div class="m-earliest-time" id="m-jum-khutbah"><?= $jummah['khutbah'] ?></div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="m-prayer-col" id="m-card-Asr" style="grid-column:3;" data-col="Asr">
-                <div class="m-col-bg" style="grid-column:3;" data-col="Asr"></div>
-                <div class="m-pill-row" style="grid-column:3;" data-col="Asr"><span class="m-status-pill" id="m-pill-Asr"></span></div>
-                <span class="m-prayer-icon" style="grid-column:3;" data-col="Asr">🌤️</span>
-                <div class="m-prayer-name" style="grid-column:3;" data-col="Asr">Asr</div>
-                <div class="m-prayer-desc" style="grid-column:3;" data-col="Asr">Afternoon Prayer</div>
-                <div class="m-jamaat-label" style="grid-column:3;" data-col="Asr">Jamaat</div>
-                <div class="m-jamaat-time" style="grid-column:3;" data-col="Asr"><?= $times['asr'] ?></div>
-                <div class="m-earliest-primary" style="grid-column:3;" data-col="Asr">
-                    <div class="m-prayer-divider"></div>
-                    <div class="m-earliest-block">
-                        <div class="m-earliest-label">Earliest Hanafi</div>
-                        <div class="m-earliest-time"><?= $times['asr_eh'] ?></div>
-                    </div>
-                </div>
-                <div class="m-earliest-shafi" style="grid-column:3;" data-col="Asr">
-                    <div class="m-earliest-block">
-                        <div class="m-earliest-label">Earliest Shafi</div>
-                        <div class="m-earliest-time"><?= $times['asr_es'] ?></div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="m-prayer-col" id="m-card-Maghrib" style="grid-column:4;" data-col="Maghrib">
-                <div class="m-col-bg" style="grid-column:4;" data-col="Maghrib"></div>
-                <div class="m-pill-row" style="grid-column:4;" data-col="Maghrib"><span class="m-status-pill" id="m-pill-Maghrib"></span></div>
-                <span class="m-prayer-icon" style="grid-column:4;" data-col="Maghrib">🌇</span>
-                <div class="m-prayer-name" style="grid-column:4;" data-col="Maghrib">Maghrib</div>
-                <div class="m-prayer-desc" style="grid-column:4;" data-col="Maghrib">Sunset Prayer</div>
-                <div class="m-jamaat-label" style="grid-column:4;" data-col="Maghrib">Jamaat</div>
-                <div class="m-jamaat-time" style="grid-column:4;" data-col="Maghrib"><?= $times['maghrib'] ?></div>
-                <div class="m-earliest-primary" style="grid-column:4;" data-col="Maghrib">
-                    <div class="m-prayer-divider"></div>
-                </div>
-                <div class="m-shafi-spacer" style="grid-column:4;" data-col="Maghrib"></div>
-            </div>
-
-            <div class="m-prayer-col" id="m-card-Esha" style="grid-column:5;" data-col="Esha">
-                <div class="m-col-bg" style="grid-column:5;" data-col="Esha"></div>
-                <div class="m-pill-row" style="grid-column:5;" data-col="Esha"><span class="m-status-pill" id="m-pill-Esha"></span></div>
-                <span class="m-prayer-icon" style="grid-column:5;" data-col="Esha">🌃</span>
-                <div class="m-prayer-name" style="grid-column:5;" data-col="Esha">Esha</div>
-                <div class="m-prayer-desc" style="grid-column:5;" data-col="Esha">Night Prayer</div>
-                <div class="m-jamaat-label" style="grid-column:5;" data-col="Esha">Jamaat</div>
-                <div class="m-jamaat-time" style="grid-column:5;" data-col="Esha"><?= $times['esha'] ?></div>
-                <div class="m-earliest-primary" style="grid-column:5;" data-col="Esha">
-                    <div class="m-prayer-divider"></div>
-                    <div class="m-earliest-block">
-                        <div class="m-earliest-label">Earliest</div>
-                        <div class="m-earliest-time"><?= $times['esha_e'] ?></div>
-                    </div>
-                </div>
-                <div class="m-shafi-spacer" style="grid-column:5;" data-col="Esha"></div>
-            </div>
-
-        </div><div class="m-middle">
-
-            <div class="m-mid-card m-notice-card<?= ($has_changes && ($musjid_community_msgs[0]['_jamaat_notice'] ?? false)) ? ' has-change-notice' : '' ?>" id="m-notice-card">
-                <div class="m-slide-progress" id="m-slide-progress">
-                    <div class="m-slide-progress-bar" id="m-slide-progress-bar"></div>
-                </div>
-                <?php foreach ($musjid_community_msgs as $idx => $cm): ?>
-                    <?php $isImg = ($cm['content_type'] === 'image' && !empty($cm['media_id'])); ?>
-                    <?php $isJamaatNotice = !empty($cm['_jamaat_notice']); ?>
-                    <div class="m-notice-slide" id="m-notice-<?= $idx ?>" style="<?= $idx > 0 ? 'display:none;' : 'display:flex;' ?>flex-direction:column;<?= $isImg ? 'position:absolute;inset:0;' : 'flex:1;width:100%;overflow:hidden;' ?>">
-                        <?php if ($isJamaatNotice): ?>
-                            <div style="display:flex;flex-direction:column;width:100%;flex:1;padding:14px 20px 12px;overflow:hidden;min-height:0;">
-                                <?= $cm['content_html'] ?>
-                            </div>
-                        <?php elseif ($isImg): ?>
-                            <div style="flex-shrink:0;padding:8px 14px 5px;background:rgba(0,0,0,0.45);position:relative;z-index:1;">
-                                <div class="m-notice-eyebrow" style="margin-bottom:3px;">📢 Community Notice</div>
-                                <?php if (!empty($cm['title'])): ?>
-                                    <div class="m-notice-heading" style="margin-bottom:3px;"><?= htmlspecialchars($cm['title'], ENT_QUOTES) ?></div>
-                                <?php endif; ?>
-                            </div>
-                            <div style="flex:1;min-height:0;">
-                                <img src="index.php?action=img&id=<?= (int)$cm['media_id'] ?>"
-                                     style="width:100%;height:100%;display:block;<?= $cm['image_fit'] === 'fill' ? '' : 'object-fit:'.htmlspecialchars($cm['image_fit'],ENT_QUOTES).';' ?>">
-                            </div>
-                        <?php else: /* html/text content */ ?>
-                            <?php if (!empty($cm['title'])): ?>
-                                <div class="m-notice-eyebrow" style="padding:14px 20px 0;">📢 Community Notice</div>
-                                <div class="m-notice-heading" style="padding:0 20px;"><?= htmlspecialchars($cm['title'], ENT_QUOTES) ?></div>
-                            <?php else: ?>
-                                <div class="m-notice-eyebrow" style="padding:14px 20px 0;">📢 Community Notice</div>
-                            <?php endif; ?>
-                            <div class="m-notice-body" style="flex:1;overflow:hidden;padding:0 20px 12px;"><?= $cm['content_html'] ?></div>
-                        <?php endif; ?>
-                    </div>
-                <?php endforeach; ?>
-            </div>
-
-            <div class="m-middle-right">
-
-                <div class="m-mid-card m-hadith-card">
-                    <div class="m-hadith-top">
-                        <span class="m-hadith-eyebrow">📖 Hadith of the Day</span>
-                        <span class="m-hadith-day">Day <?= $day_number ?> of 365</span>
-                    </div>
-                    <?php if ($musjid_hadith_text):
-                        /* Split: main text is everything before the first '('
-                           source is from the first '(' to the end               */
-                        $first_paren = strpos($musjid_hadith_text, '(');
-                        if ($first_paren !== false) {
-                            $hadith_main   = trim(substr($musjid_hadith_text, 0, $first_paren));
-                            $hadith_source = trim(substr($musjid_hadith_text, $first_paren));
-                        } else {
-                            $hadith_main   = $musjid_hadith_text;
-                            $hadith_source = null;
-                        }
-                        ?>
-                        <div class="m-hadith-text" id="m-hadith-text">
-                            <div class="m-hadith-text-inner" id="m-hadith-inner">
-                                <span class="m-hadith-main" id="m-hadith-main"><?= nl2br(htmlspecialchars($hadith_main, ENT_QUOTES)) ?></span>
-                                <?php if ($hadith_source): ?>
-                                    <span class="m-hadith-source" id="m-hadith-source"><?= htmlspecialchars($hadith_source, ENT_QUOTES) ?></span>
-                                <?php endif; ?>
+                        <div id="m-jum-earliest" style="display:none;width:100%;">
+                            <div class="m-earliest-block">
+                                <div class="m-earliest-label">Earliest</div>
+                                <div class="m-earliest-time"><?= $times['zuhr_e'] ?></div>
                             </div>
                         </div>
-                    <?php else: ?>
-                        <div class="m-hadith-text" style="opacity:0.4;font-family:'Nunito',sans-serif;font-size:13px;">No hadith found for today</div>
-                    <?php endif; ?>
+                    </div>
+                    <div class="m-earliest-shafi" style="grid-column:2;display:none;" data-col="Zuhr" id="m-jum-pills">
+                        <div style="display:flex;gap:4px;width:100%;height:100%;">
+                            <div class="m-earliest-block" style="flex:1;">
+                                <div class="m-earliest-label">Azaan</div>
+                                <div class="m-earliest-time" id="m-jum-azaan"><?= $jummah['azaan'] ?></div>
+                            </div>
+                            <div class="m-earliest-block" style="flex:1;">
+                                <div class="m-earliest-label">Khutbah</div>
+                                <div class="m-earliest-time" id="m-jum-khutbah"><?= $jummah['khutbah'] ?></div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
-                <div class="m-mid-card m-funeral-card" id="m-funeral-card">
-                    <div class="m-funeral-eyebrow">◆ Funeral Notice</div>
-                    <?php
-                    $active_funerals = array_filter($musjid_funeral_list, fn($f) => $f !== null);
-                    if (empty($active_funerals)):
-                        ?>
-                        <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:10px;">
-                            <div class="m-funeral-heading">No Active Funeral Notices</div>
-                            <div class="m-funeral-body" style="font-size:clamp(11px,1.2vh,15px);">No funeral announcements at this time.<br>May Allāh grant all the deceased Jannatul Firdaus. Āmeen.</div>
-                            <div style="font-size:clamp(14px,1.6vh,20px);color:var(--gold);font-family:'Amiri',serif;margin-top:6px;direction:rtl;">إِنَّا لِلَّٰهِ وَإِنَّا إِلَيْهِ رَاجِعُونَ</div>
+                <div class="m-prayer-col" id="m-card-Asr" style="grid-column:3;" data-col="Asr">
+                    <div class="m-col-bg" style="grid-column:3;" data-col="Asr"></div>
+                    <div class="m-pill-row" style="grid-column:3;" data-col="Asr"><span class="m-status-pill" id="m-pill-Asr"></span></div>
+                    <span class="m-prayer-icon" style="grid-column:3;" data-col="Asr">🌤️</span>
+                    <div class="m-prayer-name" style="grid-column:3;" data-col="Asr">Asr</div>
+                    <div class="m-prayer-desc" style="grid-column:3;" data-col="Asr">Afternoon Prayer</div>
+                    <div class="m-jamaat-label" style="grid-column:3;" data-col="Asr">Jamaat</div>
+                    <div class="m-jamaat-time" style="grid-column:3;" data-col="Asr"><?= $times['asr'] ?></div>
+                    <div class="m-earliest-primary" style="grid-column:3;" data-col="Asr">
+                        <div class="m-prayer-divider"></div>
+                        <div class="m-earliest-block">
+                            <div class="m-earliest-label">Earliest Hanafi</div>
+                            <div class="m-earliest-time"><?= $times['asr_eh'] ?></div>
                         </div>
-                    <?php else: ?>
-                        <?php foreach (array_values($active_funerals) as $fidx => $fn): ?>
-                            <div class="m-funeral-slide" id="m-funeral-<?= $fidx ?>" style="<?= $fidx > 0 ? 'display:none;' : 'display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;' ?>">
-                                <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:8px;padding:4px 0;">
-                                    <div class="m-funeral-heading" style="font-size:clamp(16px,2vh,24px);"><?= htmlspecialchars($fn['deceased_name'], ENT_QUOTES) ?></div>
-                                    <?php if ($fn['family_details']): ?>
-                                        <div style="font-size:clamp(10px,1.1vh,14px);color:rgba(200,180,138,0.75);line-height:1.4;"><?= htmlspecialchars($fn['family_details'], ENT_QUOTES) ?></div>
+                    </div>
+                    <div class="m-earliest-shafi" style="grid-column:3;" data-col="Asr">
+                        <div class="m-earliest-block">
+                            <div class="m-earliest-label">Earliest Shafi</div>
+                            <div class="m-earliest-time"><?= $times['asr_es'] ?></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="m-prayer-col" id="m-card-Maghrib" style="grid-column:4;" data-col="Maghrib">
+                    <div class="m-col-bg" style="grid-column:4;" data-col="Maghrib"></div>
+                    <div class="m-pill-row" style="grid-column:4;" data-col="Maghrib"><span class="m-status-pill" id="m-pill-Maghrib"></span></div>
+                    <span class="m-prayer-icon" style="grid-column:4;" data-col="Maghrib">🌇</span>
+                    <div class="m-prayer-name" style="grid-column:4;" data-col="Maghrib">Maghrib</div>
+                    <div class="m-prayer-desc" style="grid-column:4;" data-col="Maghrib">Sunset Prayer</div>
+                    <div class="m-jamaat-label" style="grid-column:4;" data-col="Maghrib">Jamaat</div>
+                    <div class="m-jamaat-time" style="grid-column:4;" data-col="Maghrib"><?= $times['maghrib'] ?></div>
+                    <div class="m-earliest-primary" style="grid-column:4;" data-col="Maghrib">
+                        <div class="m-prayer-divider"></div>
+                    </div>
+                    <div class="m-shafi-spacer" style="grid-column:4;" data-col="Maghrib"></div>
+                </div>
+
+                <div class="m-prayer-col" id="m-card-Esha" style="grid-column:5;" data-col="Esha">
+                    <div class="m-col-bg" style="grid-column:5;" data-col="Esha"></div>
+                    <div class="m-pill-row" style="grid-column:5;" data-col="Esha"><span class="m-status-pill" id="m-pill-Esha"></span></div>
+                    <span class="m-prayer-icon" style="grid-column:5;" data-col="Esha">🌃</span>
+                    <div class="m-prayer-name" style="grid-column:5;" data-col="Esha">Esha</div>
+                    <div class="m-prayer-desc" style="grid-column:5;" data-col="Esha">Night Prayer</div>
+                    <div class="m-jamaat-label" style="grid-column:5;" data-col="Esha">Jamaat</div>
+                    <div class="m-jamaat-time" style="grid-column:5;" data-col="Esha"><?= $times['esha'] ?></div>
+                    <div class="m-earliest-primary" style="grid-column:5;" data-col="Esha">
+                        <div class="m-prayer-divider"></div>
+                        <div class="m-earliest-block">
+                            <div class="m-earliest-label">Earliest</div>
+                            <div class="m-earliest-time"><?= $times['esha_e'] ?></div>
+                        </div>
+                    </div>
+                    <div class="m-shafi-spacer" style="grid-column:5;" data-col="Esha"></div>
+                </div>
+
+            </div><div class="m-middle">
+
+                <div class="m-mid-card m-notice-card<?= ($has_changes && ($musjid_community_msgs[0]['_jamaat_notice'] ?? false)) ? ' has-change-notice' : '' ?>" id="m-notice-card">
+                    <div class="m-slide-progress" id="m-slide-progress">
+                        <div class="m-slide-progress-bar" id="m-slide-progress-bar"></div>
+                    </div>
+                    <?php foreach ($musjid_community_msgs as $idx => $cm): ?>
+                        <?php $isImg = ($cm['content_type'] === 'image' && !empty($cm['media_id'])); ?>
+                        <?php $isJamaatNotice = !empty($cm['_jamaat_notice']); ?>
+                        <div class="m-notice-slide" id="m-notice-<?= $idx ?>" style="<?= $idx > 0 ? 'display:none;' : 'display:flex;' ?>flex-direction:column;<?= $isImg ? 'position:absolute;inset:0;' : 'flex:1;width:100%;overflow:hidden;' ?>">
+                            <?php if ($isJamaatNotice): ?>
+                                <div style="display:flex;flex-direction:column;width:100%;flex:1;padding:14px 20px 12px;overflow:hidden;min-height:0;">
+                                    <?= $cm['content_html'] ?>
+                                </div>
+                            <?php elseif ($isImg): ?>
+                                <div style="flex-shrink:0;padding:8px 14px 5px;background:rgba(0,0,0,0.45);position:relative;z-index:1;">
+                                    <div class="m-notice-eyebrow" style="margin-bottom:3px;">📢 Community Notice</div>
+                                    <?php if (!empty($cm['title'])): ?>
+                                        <div class="m-notice-heading" style="margin-bottom:3px;"><?= htmlspecialchars($cm['title'], ENT_QUOTES) ?></div>
                                     <?php endif; ?>
-                                    <div style="width:60%;height:1px;background:var(--accent-mod);margin:4px auto;"></div>
-                                    <div style="font-size:clamp(11px,1.25vh,15px);color:var(--cream);line-height:1.7;">
-                                        <?php if ($fn['leave_from']): ?><div>🏠 <strong>Leaves from:</strong> <?= htmlspecialchars($fn['leave_from'], ENT_QUOTES) ?><?= $fn['departure_time'] ? ' at <strong>' . htmlspecialchars($fn['departure_time'], ENT_QUOTES) . '</strong>' : '' ?></div><?php endif; ?>
-                                        <?php if ($fn['janazah_location']): ?><div>🕌 <strong>Janazah:</strong> <?= htmlspecialchars($fn['janazah_location'], ENT_QUOTES) ?><?= $fn['janazah_time'] ? ' at <strong>' . htmlspecialchars($fn['janazah_time'], ENT_QUOTES) . '</strong>' : '' ?></div><?php endif; ?>
-                                        <?php if ($fn['proceeding_to']): ?><div>⚰️ <strong>Proceeding to:</strong> <?= htmlspecialchars($fn['proceeding_to'], ENT_QUOTES) ?></div><?php endif; ?>
-                                        <?php if ($fn['funeral_date_en']): ?><div style="font-size:clamp(10px,1.1vh,13px);color:var(--cream-dim);margin-top:2px;">📅 <?= htmlspecialchars($fn['funeral_date_en'], ENT_QUOTES) ?><?= $fn['funeral_date_hijri'] ? ' · ' . htmlspecialchars($fn['funeral_date_hijri'], ENT_QUOTES) : '' ?></div><?php endif; ?>
-                                    </div>
-                                    <div style="font-size:clamp(13px,1.5vh,18px);color:var(--gold);font-family:'Amiri',serif;margin-top:6px;direction:rtl;">إِنَّا لِلَّٰهِ وَإِنَّا إِلَيْهِ رَاجِعُونَ</div>
+                                </div>
+                                <div style="flex:1;min-height:0;">
+                                    <img src="index.php?action=img&id=<?= (int)$cm['media_id'] ?>"
+                                         style="width:100%;height:100%;display:block;<?= $cm['image_fit'] === 'fill' ? '' : 'object-fit:'.htmlspecialchars($cm['image_fit'],ENT_QUOTES).';' ?>">
+                                </div>
+                            <?php else: /* html/text content */ ?>
+                                <?php if (!empty($cm['title'])): ?>
+                                    <div class="m-notice-eyebrow" style="padding:14px 20px 0;">📢 Community Notice</div>
+                                    <div class="m-notice-heading" style="padding:0 20px;"><?= htmlspecialchars($cm['title'], ENT_QUOTES) ?></div>
+                                <?php else: ?>
+                                    <div class="m-notice-eyebrow" style="padding:14px 20px 0;">📢 Community Notice</div>
+                                <?php endif; ?>
+                                <div class="m-notice-body" style="flex:1;overflow:hidden;padding:0 20px 12px;"><?= $cm['content_html'] ?></div>
+                            <?php endif; ?>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+
+                <div class="m-middle-right">
+
+                    <div class="m-mid-card m-hadith-card">
+                        <div class="m-hadith-top">
+                            <span class="m-hadith-eyebrow">📖 Hadith of the Day</span>
+                            <span class="m-hadith-day">Day <?= $day_number ?> of 365</span>
+                        </div>
+                        <?php if ($musjid_hadith_text):
+                            /* Split: main text is everything before the first '('
+                               source is from the first '(' to the end               */
+                            $first_paren = strpos($musjid_hadith_text, '(');
+                            if ($first_paren !== false) {
+                                $hadith_main   = trim(substr($musjid_hadith_text, 0, $first_paren));
+                                $hadith_source = trim(substr($musjid_hadith_text, $first_paren));
+                            } else {
+                                $hadith_main   = $musjid_hadith_text;
+                                $hadith_source = null;
+                            }
+                            ?>
+                            <div class="m-hadith-text" id="m-hadith-text">
+                                <div class="m-hadith-text-inner" id="m-hadith-inner">
+                                    <span class="m-hadith-main" id="m-hadith-main"><?= nl2br(htmlspecialchars($hadith_main, ENT_QUOTES)) ?></span>
+                                    <?php if ($hadith_source): ?>
+                                        <span class="m-hadith-source" id="m-hadith-source"><?= htmlspecialchars($hadith_source, ENT_QUOTES) ?></span>
+                                    <?php endif; ?>
                                 </div>
                             </div>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                </div>
+                        <?php else: ?>
+                            <div class="m-hadith-text" style="opacity:0.4;font-family:'Nunito',sans-serif;font-size:13px;">No hadith found for today</div>
+                        <?php endif; ?>
+                    </div>
 
-            </div></div><div class="m-markers">
+                    <div class="m-mid-card m-funeral-card" id="m-funeral-card">
+                        <div class="m-funeral-eyebrow">◆ Funeral Notice</div>
+                        <?php
+                        $active_funerals = array_filter($musjid_funeral_list, fn($f) => $f !== null);
+                        if (empty($active_funerals)):
+                            ?>
+                            <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:10px;">
+                                <div class="m-funeral-heading">No Active Funeral Notices</div>
+                                <div class="m-funeral-body" style="font-size:clamp(11px,1.2vh,15px);">No funeral announcements at this time.<br>May Allāh grant all the deceased Jannatul Firdaus. Āmeen.</div>
+                                <div style="font-size:clamp(14px,1.6vh,20px);color:var(--gold);font-family:'Amiri',serif;margin-top:6px;direction:rtl;">إِنَّا لِلَّٰهِ وَإِنَّا إِلَيْهِ رَاجِعُونَ</div>
+                            </div>
+                        <?php else: ?>
+                            <?php foreach (array_values($active_funerals) as $fidx => $fn): ?>
+                                <div class="m-funeral-slide" id="m-funeral-<?= $fidx ?>" style="<?= $fidx > 0 ? 'display:none;' : 'display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;' ?>">
+                                    <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:8px;padding:4px 0;">
+                                        <div class="m-funeral-heading" style="font-size:clamp(16px,2vh,24px);"><?= htmlspecialchars($fn['deceased_name'], ENT_QUOTES) ?></div>
+                                        <?php if ($fn['family_details']): ?>
+                                            <div style="font-size:clamp(10px,1.1vh,14px);color:rgba(200,180,138,0.75);line-height:1.4;"><?= htmlspecialchars($fn['family_details'], ENT_QUOTES) ?></div>
+                                        <?php endif; ?>
+                                        <div style="width:60%;height:1px;background:var(--accent-mod);margin:4px auto;"></div>
+                                        <div style="font-size:clamp(11px,1.25vh,15px);color:var(--cream);line-height:1.7;">
+                                            <?php if ($fn['leave_from']): ?><div>🏠 <strong>Leaves from:</strong> <?= htmlspecialchars($fn['leave_from'], ENT_QUOTES) ?><?= $fn['departure_time'] ? ' at <strong>' . htmlspecialchars($fn['departure_time'], ENT_QUOTES) . '</strong>' : '' ?></div><?php endif; ?>
+                                            <?php if ($fn['janazah_location']): ?><div>🕌 <strong>Janazah:</strong> <?= htmlspecialchars($fn['janazah_location'], ENT_QUOTES) ?><?= $fn['janazah_time'] ? ' at <strong>' . htmlspecialchars($fn['janazah_time'], ENT_QUOTES) . '</strong>' : '' ?></div><?php endif; ?>
+                                            <?php if ($fn['proceeding_to']): ?><div>⚰️ <strong>Proceeding to:</strong> <?= htmlspecialchars($fn['proceeding_to'], ENT_QUOTES) ?></div><?php endif; ?>
+                                            <?php if ($fn['funeral_date_en']): ?><div style="font-size:clamp(10px,1.1vh,13px);color:var(--cream-dim);margin-top:2px;">📅 <?= htmlspecialchars($fn['funeral_date_en'], ENT_QUOTES) ?><?= $fn['funeral_date_hijri'] ? ' · ' . htmlspecialchars($fn['funeral_date_hijri'], ENT_QUOTES) : '' ?></div><?php endif; ?>
+                                        </div>
+                                        <div style="font-size:clamp(13px,1.5vh,18px);color:var(--gold);font-family:'Amiri',serif;margin-top:6px;direction:rtl;">إِنَّا لِلَّٰهِ وَإِنَّا إِلَيْهِ رَاجِعُونَ</div>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </div>
+
+                </div></div>
+        <?php endif; ?>
+
+        <div class="m-markers">
             <div class="m-marker-card">
                 <span class="m-marker-icon">🌙</span>
                 <div>
@@ -2257,13 +2310,13 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
 
         /*
          * Jummah mode is active when:
-         *   - It is Friday (day=5) and Zuhr window is not yet closed (i.e. before Asr opens)
-         *   - OR it is Thursday (day=4) and time >= Maghrib (previewing tomorrow's Jummah)
+         * - It is Friday (day=5) and Zuhr window is not yet closed (i.e. before Asr opens)
+         * - OR it is Thursday (day=4) and time >= Maghrib (previewing tomorrow's Jummah)
          * In Jummah mode:
-         *   - Zuhr card label/icon/desc/jamaat-time switch to Jummah values
-         *   - Earliest block hides, Azaan+Khutbah pills show
-         *   - If Thursday after Maghrib → pill = "Tomorrow" (amber)
-         *   - If Friday, window not yet open → pill = "Upcoming"
+         * - Zuhr card label/icon/desc/jamaat-time switch to Jummah values
+         * - Earliest block hides, Azaan+Khutbah pills show
+         * - If Thursday after Maghrib → pill = "Tomorrow" (amber)
+         * - If Friday, window not yet open → pill = "Upcoming"
          */
         function getJummahMode(now) {
             const dow = simDow(); // sim-aware day of week
@@ -2279,9 +2332,10 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
             const iconEl         = document.getElementById('m-icon-Zuhr');
             const descEl         = document.getElementById('m-desc-Zuhr');
             const jtimeEl        = document.getElementById('m-jtime-Zuhr');
-            const normalEarliest = document.getElementById('m-zuhr-earliest-block'); // normal Zuhr single pill (e-primary)
-            const jumEarliest    = document.getElementById('m-jum-earliest');        // Jummah Earliest pill (e-primary)
-            const jumPills       = document.getElementById('m-jum-pills');           // Azaan+Khutbah in e-shafi row
+            const normalEarliest = document.getElementById('m-zuhr-earliest-block');
+            const jumEarliest    = document.getElementById('m-jum-earliest');
+            const jumPills       = document.getElementById('m-jum-pills');
+            const jumTalk        = document.getElementById('m-jum-talk');
 
             if (jMode !== 'none') {
                 if (nameEl)         nameEl.textContent  = 'Jummah';
@@ -2289,8 +2343,16 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
                 if (descEl)         descEl.textContent  = 'Friday Prayer';
                 if (jtimeEl)        jtimeEl.textContent = JUM.jamaat;
                 if (normalEarliest) normalEarliest.style.display = 'none';
-                if (jumEarliest)    jumEarliest.style.display    = '';      // show Earliest in e-primary
-                if (jumPills)       jumPills.style.display       = 'flex';  // show Azaan+Khutbah in e-shafi
+                if (jumEarliest)    jumEarliest.style.display    = '';
+                if (jumPills)       jumPills.style.display       = 'flex';
+                if (jumTalk) {
+                    if (JUM.talk_by) {
+                        jumTalk.style.display = 'flex';
+                        jumTalk.innerHTML = '<span style="font-size:10px;color:var(--gold-dim);text-transform:uppercase;letter-spacing:2px;margin-bottom:2px;">Talk By</span><span style="font-size:16px;font-weight:800;color:var(--cream);">' + JUM.talk_by + '</span>';
+                    } else {
+                        jumTalk.style.display = 'none';
+                    }
+                }
             } else {
                 if (nameEl)         nameEl.textContent  = 'Zuhr';
                 if (iconEl)         iconEl.textContent  = '☀️';
@@ -2299,9 +2361,9 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
                 if (normalEarliest) normalEarliest.style.display = '';
                 if (jumEarliest)    jumEarliest.style.display    = 'none';
                 if (jumPills)       jumPills.style.display       = 'none';
+                if (jumTalk)        jumTalk.style.display        = 'none';
             }
         }
-
         function tick() {
             const now = nowSec();
 
@@ -2656,7 +2718,7 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
             (function(){
                 var baseline = <?= json_encode($content_version_val ?? '0') ?>;
                 function checkForChanges(){
-                    fetch('index.php?display=musjid&poll=1', { cache: 'no-store' })
+                    fetch('index.php?display=<?= htmlspecialchars($display_param, ENT_QUOTES) ?>&poll=1', { cache: 'no-store' })
                         .then(function(r){ return r.ok ? r.json() : null; })
                         .catch(function(){ return null; })
                         .then(function(data){
@@ -2811,7 +2873,7 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
         function simApply() {
             const dateVal  = document.getElementById('sim-date-input').value;
             const timeVal  = document.getElementById('sim-time-input').value || '00:00';
-            location.href  = `?display=musjid&sim=1&sim_date=${encodeURIComponent(dateVal)}&sim_time=${encodeURIComponent(timeVal)}:00`;
+            location.href  = `?display=<?= htmlspecialchars($display_param, ENT_QUOTES) ?>&sim=1&sim_date=${encodeURIComponent(dateVal)}&sim_time=${encodeURIComponent(timeVal)}:00`;
         }
 
         /* ── Quick scenario shortcuts ── */
@@ -2858,7 +2920,7 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
 
         /* ── Exit simulator ── */
         function simExit() {
-            window.location.href = '?display=musjid';
+            window.location.href = '?display=<?= htmlspecialchars($display_param, ENT_QUOTES) ?>';
         }
 
         /* ── Badge + pause button state ── */
@@ -3712,162 +3774,156 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
 <body>
 
 <?php if ($sim_active): ?>
-    <!-- ══ DEBUG SIM TOOL (standard page, superadmin only) ══ -->
-    <div id="sim-panel" class="sim-collapsed">
-        <div id="sim-header">
-            <div class="sim-header-left">
-                <span style="font-size:15px;">🧪</span>
-                <span class="sim-title">Debug Sim Tool</span>
-                <span class="sim-badge" id="sim-badge">PAUSED</span>
-            </div>
-            <button id="sim-collapse-btn" onclick="simToggleCollapse(event)" title="Expand/Collapse">▲</button>
+<div id="sim-panel" class="sim-collapsed">
+    <div id="sim-header">
+        <div class="sim-header-left">
+            <span style="font-size:15px;">🧪</span>
+            <span class="sim-title">Debug Sim Tool</span>
+            <span class="sim-badge" id="sim-badge">PAUSED</span>
         </div>
-        <div id="sim-body">
-            <div id="sim-clock-display">--:--:--</div>
-            <div id="sim-status">Loading…</div>
-            <div class="sim-divider"></div>
-            <div class="sim-row">
-                <span class="sim-label">📅 Simulate Date</span>
-                <input type="date" class="sim-input" id="sim-date-input"
-                       value="<?= htmlspecialchars(date('Y-m-d', $sim_ts), ENT_QUOTES) ?>">
+        <button id="sim-collapse-btn" onclick="simToggleCollapse(event)" title="Expand/Collapse">▲</button>
+    </div>
+    <div id="sim-body">
+        <div id="sim-clock-display">--:--:--</div>
+        <div id="sim-status">Loading…</div>
+        <div class="sim-divider"></div>
+        <div class="sim-row">
+            <span class="sim-label">📅 Simulate Date</span>
+            <input type="date" class="sim-input" id="sim-date-input"
+                   value="<?= htmlspecialchars(date('Y-m-d', $sim_ts), ENT_QUOTES) ?>">
+        </div>
+        <div class="sim-row">
+            <span class="sim-label">🕐 Simulate Time</span>
+            <div class="sim-controls">
+                <input type="range" id="sim-slider" min="0" max="86399" step="60"
+                       value="<?= (function($t){ $p=explode(':',$t); return (int)$p[0]*3600+(int)$p[1]*60+(isset($p[2])?(int)$p[2]:0); })($sim_time) ?>"
+                       style="flex:1;accent-color:#C9A84C;"
+                       oninput="simSliderMove(this.value)">
+                <input type="text" class="sim-input" id="sim-time-input"
+                       value="<?= substr($sim_time,0,5) ?>"
+                       style="width:64px;text-align:center;"
+                       oninput="simTimeTextChange(this.value)">
             </div>
-            <div class="sim-row">
-                <span class="sim-label">🕐 Simulate Time</span>
-                <div class="sim-controls">
-                    <input type="range" id="sim-slider" min="0" max="86399" step="60"
-                           value="<?= (function($t){ $p=explode(':',$t); return (int)$p[0]*3600+(int)$p[1]*60+(isset($p[2])?(int)$p[2]:0); })($sim_time) ?>"
-                           style="flex:1;accent-color:#C9A84C;"
-                           oninput="simSliderMove(this.value)">
-                    <input type="text" class="sim-input" id="sim-time-input"
-                           value="<?= substr($sim_time,0,5) ?>"
-                           style="width:64px;text-align:center;"
-                           oninput="simTimeTextChange(this.value)">
-                </div>
+        </div>
+        <div class="sim-row">
+            <span class="sim-label">⚡ Speed</span>
+            <div class="sim-controls" id="sim-speed-btns">
+                <button class="sim-speed-btn active" data-speed="1"   onclick="simSetSpeed(1)">1×</button>
+                <button class="sim-speed-btn"        data-speed="5"   onclick="simSetSpeed(5)">5×</button>
+                <button class="sim-speed-btn"        data-speed="30"  onclick="simSetSpeed(30)">30×</button>
+                <button class="sim-speed-btn"        data-speed="60"  onclick="simSetSpeed(60)">60×</button>
+                <button class="sim-speed-btn"        data-speed="300" onclick="simSetSpeed(300)">300×</button>
             </div>
-            <div class="sim-row">
-                <span class="sim-label">⚡ Speed</span>
-                <div class="sim-controls" id="sim-speed-btns">
-                    <button class="sim-speed-btn active" data-speed="1"   onclick="simSetSpeed(1)">1×</button>
-                    <button class="sim-speed-btn"        data-speed="5"   onclick="simSetSpeed(5)">5×</button>
-                    <button class="sim-speed-btn"        data-speed="30"  onclick="simSetSpeed(30)">30×</button>
-                    <button class="sim-speed-btn"        data-speed="60"  onclick="simSetSpeed(60)">60×</button>
-                    <button class="sim-speed-btn"        data-speed="300" onclick="simSetSpeed(300)">300×</button>
-                </div>
+        </div>
+        <div class="sim-divider"></div>
+        <div class="sim-row">
+            <span class="sim-label">🎯 Quick Scenarios</span>
+            <div class="sim-scenario-grid">
+                <button class="sim-scenario-btn" onclick="simScenario('fajr_window')">🌅 Fajr Opens</button>
+                <button class="sim-scenario-btn" onclick="simScenario('zawaal')">🔴 Zawaal</button>
+                <button class="sim-scenario-btn" onclick="simScenario('zuhr_window')">☀️ Zuhr Opens</button>
+                <button class="sim-scenario-btn" onclick="simScenario('asr_window')">🌤️ Asr Opens</button>
+                <button class="sim-scenario-btn" onclick="simScenario('maghrib_window')">🌇 Maghrib Opens</button>
+                <button class="sim-scenario-btn" onclick="simScenario('esha_window')">🌃 Esha Opens</button>
+                <button class="sim-scenario-btn" onclick="simScenario('thu_maghrib')">🕌 Thu→Jummah</button>
+                <button class="sim-scenario-btn" onclick="simScenario('fri_zuhr')">🕌 Fri Zuhr Now</button>
             </div>
-            <div class="sim-divider"></div>
-            <div class="sim-row">
-                <span class="sim-label">🎯 Quick Scenarios</span>
-                <div class="sim-scenario-grid">
-                    <button class="sim-scenario-btn" onclick="simScenario('fajr_window')">🌅 Fajr Opens</button>
-                    <button class="sim-scenario-btn" onclick="simScenario('zawaal')">🔴 Zawaal</button>
-                    <button class="sim-scenario-btn" onclick="simScenario('zuhr_window')">☀️ Zuhr Opens</button>
-                    <button class="sim-scenario-btn" onclick="simScenario('asr_window')">🌤️ Asr Opens</button>
-                    <button class="sim-scenario-btn" onclick="simScenario('maghrib_window')">🌇 Maghrib Opens</button>
-                    <button class="sim-scenario-btn" onclick="simScenario('esha_window')">🌃 Esha Opens</button>
-                    <button class="sim-scenario-btn" onclick="simScenario('thu_maghrib')">🕌 Thu→Jummah</button>
-                    <button class="sim-scenario-btn" onclick="simScenario('fri_zuhr')">🕌 Fri Zuhr Now</button>
-                </div>
-            </div>
-            <div class="sim-divider"></div>
-            <div class="sim-action-row">
-                <button class="sim-btn sim-btn-primary"   onclick="simApply()">▶ Apply</button>
-                <button class="sim-btn sim-btn-secondary" onclick="simPause()" id="sim-pause-btn">⏸ Pause</button>
-                <button class="sim-btn sim-btn-danger"    onclick="simExit()">✕ Exit</button>
-            </div>
+        </div>
+        <div class="sim-divider"></div>
+        <div class="sim-action-row">
+            <button class="sim-btn sim-btn-primary"   onclick="simApply()">▶ Apply</button>
+            <button class="sim-btn sim-btn-secondary" onclick="simPause()" id="sim-pause-btn">⏸ Pause</button><button class="sim-btn sim-btn-danger"    onclick="simExit()">✕ Exit</button>
         </div>
     </div>
+</div>
 <?php endif; ?>
 
 <div class="page-wrap">
-
-    <div class="hero">
+    <header class="hero">
         <span class="hero-mosque">🕌</span>
         <h1 class="hero-title"><?= htmlspecialchars($site_name, ENT_QUOTES) ?></h1>
-        <p class="hero-sub">Salaah Times</p>
-        <?php if ($is_ramadan_active): ?>
-            <div style="display:inline-block; margin-top: 10px; background: rgba(201,168,76,0.12); border: 1px solid rgba(201,168,76,0.4); border-radius: 20px; padding: 4px 14px; font-size: 10px; font-weight: 800; color: var(--gold-light); letter-spacing: 2px; text-transform: uppercase;">
-                ☪️ Ramadan Schedule Active
-            </div>
-        <?php endif; ?>
+        <div class="hero-sub">Daily Salaah Times</div>
         <div class="gold-rule"></div>
-    </div>
+    </header>
 
     <div class="top-bar">
         <div class="top-bar-date">
             <strong>Today</strong>
-            <div> <?= $full_date ?> <span style="color:rgba(255,255,255,0.3);margin:0 6px;">|</span><span style="color:var(--gold,#c9a84c);font-weight:600;"><?= htmlspecialchars($hijri_date_str, ENT_QUOTES) ?></span>
-            </div>
+            <?= htmlspecialchars($full_date, ENT_QUOTES) ?><br>
+            <span style="color:var(--gold);font-weight:700;letter-spacing:0.5px;"><?= htmlspecialchars($hijri_date_str, ENT_QUOTES) ?></span>
         </div>
         <div class="top-bar-clock">
             <strong>Current Time</strong>
-            <div class="live-clock" id="liveClock">--:--:--</div>
+            <span class="live-clock" id="liveClock">--:--:--</span>
+        </div>
+    </div>
+
+    <?php if ($has_changes): ?>
+        <div class="jamaat-change-banner" id="jamaat-banner">
+            <?= nmcBuildChangeNoticeHTML($jamaat_changes, 'web') ?>
+        </div>
+    <?php endif; ?>
+
+    <div class="countdown-banner">
+        <div class="cd-eyebrow">Next Prayer</div>
+        <div class="cd-context-label">
+            <span class="cd-prayer-name" id="cdName">–</span>
+            <span class="cd-verb">begins in</span>
+        </div>
+        <div class="cd-digits" id="cdDigits">--:--:--</div>
+        <div class="cd-units">
+            <span class="cd-unit-label">Hours</span>
+            <span class="cd-unit-label">Minutes</span>
+            <span class="cd-unit-label">Seconds</span>
+        </div>
+        <div class="cd-since" id="cdSince"></div>
+    </div>
+
+    <div class="event-banner">
+        <div class="event-left">
+            <span class="event-icon" id="evIcon">–</span>
+            <div>
+                <div class="event-eyebrow">Next Marker</div>
+                <div class="event-name" id="evName">–</div>
+                <div class="event-verb" id="evVerb">in</div>
+            </div>
+        </div>
+        <div class="event-right">
+            <div class="event-digits" id="evDigits">--:--:--</div>
+            <div class="event-units">
+                <span class="event-unit">Hrs</span>
+                <span class="event-unit">Min</span>
+                <span class="event-unit">Sec</span>
+            </div>
         </div>
     </div>
 
     <?php if ($times): ?>
-
-        <?php if ($has_changes): ?>
-            <div class="jamaat-change-banner" id="jamaat-change-banner">
-                <?= nmcBuildChangeNoticeHTML($jamaat_changes, 'website') ?>
-            </div>
-        <?php endif; ?>
-
-        <div class="countdown-banner">
-            <div class="cd-eyebrow">Next Prayer</div>
-            <div class="cd-context-label">
-                <span class="cd-prayer-name" id="cdName">–</span>
-                <span class="cd-verb" id="cdVerb">–</span>
-            </div>
-            <div class="cd-digits" id="cdDigits">--:--:--</div>
-            <div class="cd-units">
-                <span class="cd-unit-label">hours</span>
-                <span class="cd-unit-label">minutes</span>
-                <span class="cd-unit-label">seconds</span>
-            </div>
-            <div class="cd-since" id="cdSince"></div>
-        </div>
-
-        <div class="event-banner">
-            <div class="event-left">
-                <span class="event-icon" id="evIcon">–</span>
-                <div>
-                    <div class="event-eyebrow">Next Event</div>
-                    <div class="event-name" id="evName">–</div>
-                    <div class="event-verb" id="evVerb">–</div>
-                </div>
-            </div>
-            <div class="event-right">
-                <div class="event-digits" id="evDigits">--:--:--</div>
-                <div class="event-units">
-                    <span class="event-unit">hrs</span>
-                    <span class="event-unit">min</span>
-                    <span class="event-unit">sec</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="section-head">Five Daily Prayers</div>
+        <div class="section-head">Salaah Times</div>
         <div class="prayer-grid">
 
-            <div class="prayer-card" id="card-Fajr">
+            <div class="prayer-card" id="card-Fajr" data-col="Fajr">
                 <span class="status-pill" id="pill-Fajr"></span>
                 <div class="card-top">
                     <span class="card-icon">🌅</span>
-                    <div><div class="card-name">Fajr</div><div class="card-desc">Dawn Prayer</div></div>
+                    <div>
+                        <div class="card-name">Fajr</div>
+                        <div class="card-desc">Dawn Prayer</div>
+                    </div>
                 </div>
                 <div class="time-label-row">
-                    <span class="time-label">Jamaat Time</span>
-                    <span class="time-label">Earliest Time</span>
+                    <div class="time-label">Jamaat</div>
                 </div>
                 <div class="time-row">
                     <div class="time-main"><?= $times['fajr'] ?></div>
                     <div class="earliest-block">
+                        <span class="earliest-label">Earliest</span>
                         <span class="earliest-time"><?= $times['fajr_e'] ?></span>
                     </div>
                 </div>
             </div>
 
-            <div class="prayer-card" id="card-Zuhr">
+            <div class="prayer-card" id="card-Zuhr" data-col="Zuhr">
                 <span class="status-pill" id="pill-Zuhr"></span>
                 <div class="card-top">
                     <span class="card-icon" id="icon-Zuhr">☀️</span>
@@ -3876,92 +3932,96 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
                         <div class="card-desc" id="desc-Zuhr">Midday Prayer</div>
                     </div>
                 </div>
-                <!-- Normal (non-Friday) layout -->
-                <div id="zuhr-normal-layout">
-                    <div class="time-label-row">
-                        <span class="time-label">Jamaat Time</span>
-                        <span class="time-label">Earliest Time</span>
-                    </div>
-                    <div class="time-row">
-                        <div class="time-main" id="jtime-Zuhr"><?= $times['zuhr'] ?></div>
-                        <div class="earliest-block">
-                            <span class="earliest-time"><?= $times['zuhr_e'] ?></span>
-                        </div>
+                <div class="time-label-row">
+                    <div class="time-label" id="jlabel-Zuhr">Jamaat</div>
+                </div>
+                <div class="time-row" id="row-Zuhr-Main">
+                    <div class="time-main" id="jtime-Zuhr"><?= $times['zuhr'] ?></div>
+                    <div class="earliest-block" id="zuhr-earliest-block">
+                        <span class="earliest-label">Earliest</span>
+                        <span class="earliest-time"><?= $times['zuhr_e'] ?></span>
                     </div>
                 </div>
-                <!-- Jummah (Friday / Thursday after Maghrib) layout — hidden by default -->
-                <div id="zuhr-jummah-layout" style="display:none;">
-                    <div class="time-label-row">
-                        <span class="time-label">Jamaat Time</span>
-                        <span class="time-label">Earliest Time</span>
+                <div class="earliest-dual" id="jum-pills" style="display:none;margin-top:10px;">
+                    <div class="earliest-block">
+                        <span class="earliest-label">Earliest</span>
+                        <span class="earliest-time"><?= $times['zuhr_e'] ?></span>
                     </div>
-                    <div class="time-row">
-                        <div class="time-main" id="jtime-Zuhr-jum"><?= $jummah['jamaat'] ?></div>
-                        <div class="earliest-dual">
-                            <!-- Top pill: time only, no label — mirrors Hanafi pill in Asr -->
-                            <div class="earliest-block time-only">
-                                <span class="earliest-time"><?= $times['zuhr_e'] ?></span>
-                            </div>
-                            <!-- Bottom pill: AZAAN label + time — mirrors Shafi pill in Asr -->
-                            <div class="earliest-block">
-                                <span class="madhab-tag">Azaan</span>
-                                <span class="earliest-time" id="jum-azaan-time"><?= $jummah['azaan'] ?></span>
-                            </div>
-                        </div>
+                    <div class="earliest-block time-only">
+                        <span class="earliest-label">Azaan</span>
+                        <span class="earliest-time" id="jum-azaan"><?= $jummah['azaan'] ?></span>
+                    </div>
+                    <div class="earliest-block time-only">
+                        <span class="earliest-label">Khutbah</span>
+                        <span class="earliest-time" id="jum-khutbah"><?= $jummah['khutbah'] ?></span>
                     </div>
                 </div>
             </div>
 
-            <div class="prayer-card" id="card-Asr">
+            <div class="prayer-card" id="card-Asr" data-col="Asr">
                 <span class="status-pill" id="pill-Asr"></span>
                 <div class="card-top">
                     <span class="card-icon">🌤️</span>
-                    <div><div class="card-name">Asr</div><div class="card-desc">Afternoon Prayer</div></div>
-                </div>
-                <div class="time-label-row">
-                    <span class="time-label">Jamaat Time</span>
-                    <span class="time-label">Earliest Time</span>
-                </div>
-                <div class="time-row">
-                    <div class="time-main"><?= $times['asr'] ?></div>
-                    <div class="earliest-dual">
-                        <div class="earliest-block">
-                            <span class="madhab-tag">Hanafi</span>
-                            <span class="earliest-time"><?= $times['asr_eh'] ?></span>
-                        </div>
-                        <div class="earliest-block">
-                            <span class="madhab-tag">Shafi</span>
-                            <span class="earliest-time"><?= $times['asr_es'] ?></span>
-                        </div>
+                    <div>
+                        <div class="card-name">Asr</div>
+                        <div class="card-desc">Afternoon Prayer</div>
                     </div>
                 </div>
-            </div>
+                <div class="time-label-row">
+                    <div class="time-label">Jamaat</div>
+                </div>
+                <div class="time-row" style="align-items: flex-end;">
+                    <div class="time-main"><?= $times['asr'] ?></div>
 
-            <div class="prayer-card" id="card-Maghrib">
+                    <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 6px;">
+                        <span class="earliest-label" style="margin-bottom: -2px;">Earliest</span>
+                        <div style="display: flex; gap: 8px;">
+                            <div class="earliest-block" style="flex-direction: column !important; justify-content: center; gap: 2px; padding: 6px 12px; width: auto; min-width: 60px;">
+                                <span class="earliest-label madhab-tag" style="white-space: nowrap;">Hanafi</span>
+                                <span class="earliest-time" style="font-size: 15px;"><?= $times['asr_eh'] ?></span>
+                            </div>
+                            <div class="earliest-block" style="flex-direction: column !important; justify-content: center; gap: 2px; padding: 6px 12px; width: auto; min-width: 60px;">
+                                <span class="earliest-label madhab-tag" style="white-space: nowrap;">Shafi</span>
+                                <span class="earliest-time" style="font-size: 15px;"><?= $times['asr_es'] ?></span>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+            <div class="prayer-card" id="card-Maghrib" data-col="Maghrib">
                 <span class="status-pill" id="pill-Maghrib"></span>
                 <div class="card-top">
                     <span class="card-icon">🌇</span>
-                    <div><div class="card-name">Maghrib</div><div class="card-desc">Sunset Prayer</div></div>
+                    <div>
+                        <div class="card-name">Maghrib</div>
+                        <div class="card-desc">Sunset Prayer</div>
+                    </div>
                 </div>
-                <div class="time-label">Jamaat Time</div>
+                <div class="time-label-row">
+                    <div class="time-label">Jamaat</div>
+                </div>
                 <div class="time-row">
                     <div class="time-main"><?= $times['maghrib'] ?></div>
                 </div>
             </div>
 
-            <div class="prayer-card" id="card-Esha">
+            <div class="prayer-card" id="card-Esha" data-col="Esha">
                 <span class="status-pill" id="pill-Esha"></span>
                 <div class="card-top">
                     <span class="card-icon">🌃</span>
-                    <div><div class="card-name">Esha</div><div class="card-desc">Night Prayer</div></div>
+                    <div>
+                        <div class="card-name">Esha</div>
+                        <div class="card-desc">Night Prayer</div>
+                    </div>
                 </div>
                 <div class="time-label-row">
-                    <span class="time-label">Jamaat Time</span>
-                    <span class="time-label">Earliest Time</span>
+                    <div class="time-label">Jamaat</div>
                 </div>
                 <div class="time-row">
                     <div class="time-main"><?= $times['esha'] ?></div>
                     <div class="earliest-block">
+                        <span class="earliest-label">Earliest</span>
                         <span class="earliest-time"><?= $times['esha_e'] ?></span>
                     </div>
                 </div>
@@ -3969,9 +4029,8 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
 
         </div>
 
-        <div class="section-head">Time Markers</div>
+        <div class="section-head" style="margin-top: 40px;">Time Markers</div>
         <div class="marker-grid">
-
             <div class="marker-card">
                 <span class="marker-icon">🌙</span>
                 <div>
@@ -3980,7 +4039,6 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
                     <div class="marker-note">Last time to eat before fast</div>
                 </div>
             </div>
-
             <div class="marker-card">
                 <span class="marker-icon">🌄</span>
                 <div>
@@ -3989,7 +4047,6 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
                     <div class="marker-note">Salah not permissible after this</div>
                 </div>
             </div>
-
             <div class="marker-card">
                 <span class="marker-icon">🕛</span>
                 <div>
@@ -3998,7 +4055,6 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
                     <div class="marker-note">Solar noon — prayer is Makrooh</div>
                 </div>
             </div>
-
             <div class="marker-card">
                 <span class="marker-icon">🌆</span>
                 <div>
@@ -4007,43 +4063,28 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
                     <div class="marker-note">Time of Iftaar</div>
                 </div>
             </div>
-
         </div>
 
     <?php else: ?>
-        <p style="text-align:center;color:var(--red-soft);padding:48px 0;">No Salaah times found for today. Please contact the site administrator.</p>
-    <?php endif; ?>
-
-    <?php if (!$remove_copyright): ?>
-        <div style="text-align:center;font-size:11px;color:var(--gold-dim);margin-top:40px;opacity:0.6;line-height:1.6;">
-            Musjid Display System (MDS) &copy; Copyright 2026 - Muhammed Cotwal<br>
-            All Rights Reserved &middot; <a href="https://github.com/muhammedc/mds" target="_blank" style="color:inherit;text-decoration:none;">github.com/muhammedc/mds</a>
+        <div style="text-align:center;color:var(--red-soft);padding:60px 20px;font-size:18px;">
+            ⚠️ No Salaah times found for today.<br>Please contact the site administrator.
         </div>
     <?php endif; ?>
 
-</div><a href="hadith.php" class="hadith-fab">
-    <span class="fab-icon">📖</span> Daily Hadith
+</div>
+
+<a href="hadith.php" class="hadith-fab">
+    <span class="fab-icon">📖</span> Hadith of the Day
 </a>
 
 <script>
-
-    /* ── Helpers ── */
-    function toSec(t) { const [h,m] = t.split(':').map(Number); return h*3600 + m*60; }
-    function pad(v)   { return String(v).padStart(2,'0'); }
-    function fmtCountdown(s) { s=Math.floor(Math.abs(s)); return `${pad(Math.floor(s/3600))}:${pad(Math.floor((s%3600)/60))}:${pad(s%60)}`; }
-    function fmtSince(s) {
-        const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
-        return h > 0 ? `${h}h ${m}m ago` : `${m} min ago`;
-    }
-
-    /* ── Data from PHP ── */
-    const prayers = <?= $prayer_js ?>;  // 5 main prayers only
-    const events  = <?= $events_js ?>;  // Sehri, Sunrise, Zawaal, Sunset
-    const W       = <?= $windows_js ?>; // Window boundaries (madhab-aware)
+    /* ── Prayer / event data from PHP ── */
+    const prayers = <?= $prayer_js ?>;
+    const events  = <?= $events_js ?>;
+    const W       = <?= $windows_js ?>;
     const JUM     = <?= $jummah_js ?>; // Jummah times
-    const SIM     = <?= $sim_js ?>;    // Simulator config
+    const SIM     = <?= $sim_js ?>;
 
-    /* ══ SIMULATOR ENGINE (shared with musjid mode) ══ */
     const _SIM = {
         active:    SIM.active,
         startSec:  SIM.active ? (function(){ const p=SIM.time.split(':').map(Number); return p[0]*3600+p[1]*60+(p[2]||0); })() : 0,
@@ -4054,7 +4095,13 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
         dow:       SIM.dow,
     };
 
-    /* nowSec() — real or simulated whole seconds since midnight */
+    function toSec(t) { const [h,m] = t.split(':').map(Number); return h*3600 + m*60; }
+    function pad(v)   { return String(v).padStart(2,'0'); }
+    function fmtSince(s) {
+        const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
+        return h > 0 ? `${h}h ${m}m ago` : `${m} min ago`;
+    }
+
     function nowSec() {
         if (!_SIM.active) {
             const n = new Date();
@@ -4065,23 +4112,16 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
         return Math.floor(_SIM.startSec + elapsed) % 86400;
     }
 
-    /* simDow() — real or overridden day-of-week */
     function simDow() {
         if (_SIM.active && _SIM.dow >= 0) return _SIM.dow;
         return new Date().getDay();
     }
 
-    /*
-     * Prayer validity windows — OPEN = earliest valid time, CLOSE = window end
-     * The boundary between Zuhr and Asr uses the madhab setting (W.asr_boundary):
-     *   Hanafi → e_asr_hanafi (later)   Shafi → e_asr_shafi (earlier)
-     *
-     * Fajr    : opens e_fajr        → closes sunrise
-     * Zuhr    : opens e_zuhr        → closes asr_boundary
-     * Asr     : opens asr_boundary  → closes sunset
-     * Maghrib : opens maghrib       → closes e_esha  (no separate earliest for Maghrib)
-     * Esha    : opens e_esha        → closes e_fajr next day
-     */
+    function fmtCountdown(s) {
+        s = Math.floor(Math.abs(s));
+        return `${pad(Math.floor(s/3600))}:${pad(Math.floor((s%3600)/60))}:${pad(s%60)}`;
+    }
+
     const prayerWindows = {
         Fajr:    { open: toSec(W.fajr_e),       close: toSec(W.sunrise)        },
         Zuhr:    { open: toSec(W.zuhr_e),       close: toSec(W.asr_boundary)   },
@@ -4090,7 +4130,6 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
         Esha:    { open: toSec(W.esha_e),       close: toSec(W.fajr_e) + 86400 },
     };
 
-    /* ── Live clock ── */
     function updateClock() {
         if (_SIM.active) {
             const s = Math.floor(nowSec());
@@ -4105,32 +4144,17 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
     setInterval(updateClock, 1000);
     updateClock();
 
-    /* ── Jamaat change banner dismiss (session-scoped) ── */
-    (function(){
-        var banner = document.getElementById('jamaat-change-banner');
-        if (!banner) return;
-        try {
-            if (sessionStorage.getItem('nmc_jc_dismissed') === '1') {
-                banner.style.display = 'none';
-            }
-        } catch(e) {}
-    })();
     function nmcDismissJamaatBanner() {
-        var b = document.getElementById('jamaat-change-banner');
-        if (b) {
-            b.style.transition = 'opacity 0.3s ease';
-            b.style.opacity = '0';
-            setTimeout(function(){ b.style.display = 'none'; }, 320);
-        }
-        try { sessionStorage.setItem('nmc_jc_dismissed', '1'); } catch(e) {}
+        const b = document.getElementById('jamaat-banner');
+        if (b) b.style.display = 'none';
     }
 
-    /* ── Jummah helpers ── */
     function getJummahMode(now) {
-        const dow = simDow(); // sim-aware
+        const dow = simDow();
+        const maghribSec = toSec(W.maghrib);
         const asrBoundarySec = prayerWindows.Asr.open;
         if (dow === 5 && now < asrBoundarySec) return 'friday';
-        if (dow === 4 && now >= toSec(W.maghrib)) return 'tomorrow';
+        if (dow === 4 && now >= maghribSec)    return 'tomorrow';
         return 'none';
     }
 
@@ -4138,56 +4162,44 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
         const nameEl         = document.getElementById('name-Zuhr');
         const iconEl         = document.getElementById('icon-Zuhr');
         const descEl         = document.getElementById('desc-Zuhr');
-        const normalLayout   = document.getElementById('zuhr-normal-layout');
-        const jummahLayout   = document.getElementById('zuhr-jummah-layout');
-        const jtimeEl        = document.getElementById('jtime-Zuhr');       // normal layout time
-        const jtimeJumEl     = document.getElementById('jtime-Zuhr-jum');   // jummah layout time
+        const jtimeEl        = document.getElementById('jtime-Zuhr');
+        const normalEarliest = document.getElementById('zuhr-earliest-block');
+        const jumPills       = document.getElementById('jum-pills');
 
         if (jMode !== 'none') {
-            if (nameEl)       nameEl.textContent = 'Jummah';
-            if (iconEl)       iconEl.textContent = '🕌';
-            if (descEl)       descEl.textContent = 'Friday Prayer';
-            if (normalLayout) normalLayout.style.display = 'none';
-            if (jummahLayout) jummahLayout.style.display = '';
-            // keep normal jtime in sync in case mode reverts mid-session
-            if (jtimeEl)      jtimeEl.textContent = JUM.jamaat;
+            if (nameEl)         nameEl.textContent  = 'Jummah';
+            if (iconEl)         iconEl.textContent  = '🕌';
+            if (descEl)         descEl.textContent  = 'Friday Prayer';
+            if (jtimeEl)        jtimeEl.textContent = JUM.jamaat;
+            if (normalEarliest) normalEarliest.style.display = 'none';
+            if (jumPills)       jumPills.style.display       = 'flex';
         } else {
-            if (nameEl)       nameEl.textContent = 'Zuhr';
-            if (iconEl)       iconEl.textContent = '☀️';
-            if (descEl)       descEl.textContent = 'Midday Prayer';
-            if (normalLayout) normalLayout.style.display = '';
-            if (jummahLayout) jummahLayout.style.display = 'none';
-            if (jtimeEl)      jtimeEl.textContent = W.zuhr;
+            if (nameEl)         nameEl.textContent  = 'Zuhr';
+            if (iconEl)         iconEl.textContent  = '☀️';
+            if (descEl)         descEl.textContent  = 'Midday Prayer';
+            if (jtimeEl)        jtimeEl.textContent = W.zuhr;
+            if (normalEarliest) normalEarliest.style.display = '';
+            if (jumPills)       jumPills.style.display       = 'none';
         }
     }
 
-    /* ── Main tick ── */
     function tick() {
         const now = nowSec();
-
-        /* ── Jummah mode ── */
         const jMode = getJummahMode(now);
         applyJummahCard(jMode);
 
-        /* ── PRAYER BANNER: next of the 5 main prayers ── */
         let nextPrayer = null, minPrayerDiff = Infinity;
         prayers.forEach(p => {
             let pTime = p.name === 'Zuhr' && jMode !== 'none' ? JUM.jamaat : p.time;
             let d = toSec(pTime) - now;
             if (d <= 0) d += 86400;
-            if (d < minPrayerDiff) {
-                minPrayerDiff = d;
-                nextPrayer = {...p, displayName: p.name === 'Zuhr' && jMode !== 'none' ? 'Jummah' : p.name};
-            }
+            if (d < minPrayerDiff) { minPrayerDiff = d; nextPrayer = {...p, displayName: p.name === 'Zuhr' && jMode !== 'none' ? 'Jummah' : p.name}; }
         });
-
         if (nextPrayer) {
             document.getElementById('cdName').textContent   = `${nextPrayer.icon} ${nextPrayer.displayName || nextPrayer.name}`;
-            document.getElementById('cdVerb').textContent   = 'begins in';
             document.getElementById('cdDigits').textContent = fmtCountdown(minPrayerDiff);
         }
 
-        /* "Since" — last prayer that passed */
         let lastPrayer = null, minPast = Infinity;
         prayers.forEach(p => {
             let past = now - toSec(p.time);
@@ -4196,26 +4208,22 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
         });
         if (lastPrayer) {
             const lName = lastPrayer.name === 'Zuhr' && jMode !== 'none' ? 'Jummah' : lastPrayer.name;
-            document.getElementById('cdSince').textContent =
-                `${lastPrayer.icon} ${lName} was ${fmtSince(minPast)}`;
+            document.getElementById('cdSince').textContent = `${lastPrayer.icon} ${lName} was ${fmtSince(minPast)}`;
         }
 
-        /* ── EVENT BANNER: next of the time markers ── */
         let nextEvent = null, minEventDiff = Infinity;
         events.forEach(e => {
             let d = toSec(e.time) - now;
             if (d <= 0) d += 86400;
             if (d < minEventDiff) { minEventDiff = d; nextEvent = e; }
         });
-
         if (nextEvent) {
             document.getElementById('evIcon').textContent   = nextEvent.icon;
             document.getElementById('evName').textContent   = nextEvent.name;
-            document.getElementById('evVerb').textContent   = nextEvent.verb;
+            document.getElementById('evVerb').textContent   = nextEvent.verb || 'in';
             document.getElementById('evDigits').textContent = fmtCountdown(minEventDiff);
         }
 
-        /* ── Card status pills ── */
         const mainNames = ['Fajr','Zuhr','Asr','Maghrib','Esha'];
 
         function isOpen(name) {
@@ -4223,7 +4231,6 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
             if (name === 'Esha') return now >= w.open || now < toSec(W.fajr_e);
             return now >= w.open && now < w.close;
         }
-
         function isMissed(name) {
             if (name === 'Esha') return false;
             if (isOpen(name))    return false;
@@ -4235,9 +4242,7 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
             const w = prayerWindows[name];
             let d = w.open - now;
             if (d <= 0) d += 86400;
-            if (!isOpen(name) && !isMissed(name) && d < nextDiff) {
-                nextDiff = d; nextName = name;
-            }
+            if (!isOpen(name) && !isMissed(name) && d < nextDiff) { nextDiff = d; nextName = name; }
         });
 
         mainNames.forEach(name => {
@@ -4245,9 +4250,10 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
             const pill = document.getElementById('pill-' + name);
             if (!card || !pill) return;
 
-            card.classList.remove('active','missed');
+            card.classList.remove('active', 'missed');
             pill.className   = 'status-pill';
             pill.textContent = '';
+            document.querySelectorAll(`[data-col="${name}"]`).forEach(el => el.removeAttribute('data-missed'));
 
             if (name === 'Zuhr' && jMode === 'tomorrow') {
                 pill.classList.add('pill-tomorrow');
@@ -4263,6 +4269,7 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
                 card.classList.add('missed');
                 pill.classList.add('pill-missed');
                 pill.textContent = 'Qadha';
+                document.querySelectorAll(`[data-col="${name}"]`).forEach(el => el.setAttribute('data-missed','1'));
             } else if (name === nextName) {
                 pill.classList.add('pill-next');
                 pill.textContent = 'Next';
@@ -4272,53 +4279,71 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
             }
         });
     }
-
     setInterval(tick, 1000);
     tick();
 
-    /* Auto-refresh at midnight (disabled in simulator) */
-    if (!_SIM.active) {
-        (function() {
-            const n  = new Date();
-            const ms = new Date(n.getFullYear(), n.getMonth(), n.getDate()+1, 0, 0, 5) - n;
-            setTimeout(() => location.reload(), ms);
-        })();
-    }
-
     <?php if ($sim_active): ?>
-    /* ══ DEBUG SIM TOOL — standard page panel logic ══ */
+    /* ── Draggable panel ── */
     (function(){
         const panel  = document.getElementById('sim-panel');
         const header = document.getElementById('sim-header');
         if (!panel || !header) return;
+
         let dragging = false, ox = 0, oy = 0;
+
         header.addEventListener('mousedown', function(e) {
             if (e.target.closest('#sim-collapse-btn')) return;
-            dragging = true; ox = e.clientX - panel.offsetLeft; oy = e.clientY - panel.offsetTop;
+            dragging = true;
+            ox = e.clientX - panel.offsetLeft;
+            oy = e.clientY - panel.offsetTop;
             panel.classList.add('sim-dragging');
-            panel.style.right = 'auto'; panel.style.bottom = 'auto';
-            panel.style.left = panel.offsetLeft + 'px'; panel.style.top = panel.offsetTop + 'px';
+            panel.style.right  = 'auto';
+            panel.style.bottom = 'auto';
+            panel.style.left   = panel.offsetLeft + 'px';
+            panel.style.top    = panel.offsetTop  + 'px';
             e.preventDefault();
         });
+
         document.addEventListener('mousemove', function(e) {
             if (!dragging) return;
-            let nx = Math.max(0, Math.min(e.clientX - ox, window.innerWidth  - panel.offsetWidth));
-            let ny = Math.max(0, Math.min(e.clientY - oy, window.innerHeight - panel.offsetHeight));
-            panel.style.left = nx + 'px'; panel.style.top = ny + 'px';
+            let nx = e.clientX - ox;
+            let ny = e.clientY - oy;
+            nx = Math.max(0, Math.min(nx, window.innerWidth  - panel.offsetWidth));
+            ny = Math.max(0, Math.min(ny, window.innerHeight - panel.offsetHeight));
+            panel.style.left = nx + 'px';
+            panel.style.top  = ny + 'px';
         });
-        document.addEventListener('mouseup', function() { if (dragging) { dragging = false; panel.classList.remove('sim-dragging'); } });
-        /* touch */
+
+        document.addEventListener('mouseup', function() {
+            if (dragging) {
+                dragging = false;
+                panel.classList.remove('sim-dragging');
+            }
+        });
+
         header.addEventListener('touchstart', function(e) {
             if (e.target.closest('#sim-collapse-btn')) return;
-            const t = e.touches[0]; dragging = true; ox = t.clientX - panel.offsetLeft; oy = t.clientY - panel.offsetTop;
-            panel.style.right = 'auto'; panel.style.bottom = 'auto';
-            panel.style.left = panel.offsetLeft + 'px'; panel.style.top = panel.offsetTop + 'px';
+            const t = e.touches[0];
+            dragging = true;
+            ox = t.clientX - panel.offsetLeft;
+            oy = t.clientY - panel.offsetTop;
+            panel.style.right  = 'auto';
+            panel.style.bottom = 'auto';
+            panel.style.left   = panel.offsetLeft + 'px';
+            panel.style.top    = panel.offsetTop  + 'px';
         }, { passive: true });
+
         document.addEventListener('touchmove', function(e) {
-            if (!dragging) return; const t = e.touches[0];
-            panel.style.left = Math.max(0, Math.min(t.clientX - ox, window.innerWidth  - panel.offsetWidth))  + 'px';
-            panel.style.top  = Math.max(0, Math.min(t.clientY - oy, window.innerHeight - panel.offsetHeight)) + 'px';
+            if (!dragging) return;
+            const t = e.touches[0];
+            let nx = t.clientX - ox;
+            let ny = t.clientY - oy;
+            nx = Math.max(0, Math.min(nx, window.innerWidth  - panel.offsetWidth));
+            ny = Math.max(0, Math.min(ny, window.innerHeight - panel.offsetHeight));
+            panel.style.left = nx + 'px';
+            panel.style.top  = ny + 'px';
         }, { passive: true });
+
         document.addEventListener('touchend', function() { dragging = false; });
     })();
 
@@ -4329,51 +4354,95 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
         const collapsed = panel.classList.toggle('sim-collapsed');
         btn.textContent = collapsed ? '▲' : '▼';
     }
+
     function simSetSpeed(s) {
-        _SIM.startSec = nowSec(); _SIM.loadedAt = Date.now(); _SIM.speed = s; _SIM.paused = false;
-        document.querySelectorAll('.sim-speed-btn').forEach(b => b.classList.toggle('active', parseInt(b.dataset.speed) === s));
+        const curSec  = nowSec();
+        _SIM.startSec = curSec;
+        _SIM.loadedAt = Date.now();
+        _SIM.speed    = s;
+        _SIM.paused   = false;
+        document.querySelectorAll('.sim-speed-btn').forEach(b => {
+            b.classList.toggle('active', parseInt(b.dataset.speed) === s);
+        });
         simUpdateBadge();
     }
+
     function simPause() {
         const btn = document.getElementById('sim-pause-btn');
-        if (!_SIM.paused) { _SIM.pausedAt = nowSec(); _SIM.paused = true; if (btn) btn.textContent = '▶ Resume'; }
-        else { _SIM.startSec = _SIM.pausedAt; _SIM.loadedAt = Date.now(); _SIM.paused = false; if (btn) btn.textContent = '⏸ Pause'; }
+        if (!_SIM.paused) {
+            _SIM.pausedAt = nowSec();
+            _SIM.paused   = true;
+            if (btn) btn.textContent = '▶ Resume';
+        } else {
+            _SIM.startSec = _SIM.pausedAt;
+            _SIM.loadedAt = Date.now();
+            _SIM.paused   = false;
+            if (btn) btn.textContent = '⏸ Pause';
+        }
         simUpdateBadge();
     }
+
     function simSliderMove(val) {
         const sec = parseInt(val);
         document.getElementById('sim-time-input').value = pad(Math.floor(sec/3600)) + ':' + pad(Math.floor((sec%3600)/60));
     }
+
     function simTimeTextChange(val) {
         const m = val.match(/^(\d{1,2}):(\d{2})$/);
         if (m) document.getElementById('sim-slider').value = parseInt(m[1])*3600 + parseInt(m[2])*60;
     }
+
     function simApply() {
-        const d = document.getElementById('sim-date-input').value;
-        const t = document.getElementById('sim-time-input').value || '00:00';
-        location.href = `?sim=1&sim_date=${encodeURIComponent(d)}&sim_time=${encodeURIComponent(t)}:00`;
+        const dateVal  = document.getElementById('sim-date-input').value;
+        const timeVal  = document.getElementById('sim-time-input').value || '00:00';
+        location.href  = `?sim=1&sim_date=${encodeURIComponent(dateVal)}&sim_time=${encodeURIComponent(timeVal)}:00`;
     }
+
     function simScenario(key) {
         const dateInput = document.getElementById('sim-date-input');
         const timeInput = document.getElementById('sim-time-input');
-        function addMins(t, m) { const p=t.split(':').map(Number); let x=p[0]*60+p[1]+m; if(x<0)x+=1440; if(x>=1440)x-=1440; return pad(Math.floor(x/60))+':'+pad(x%60); }
-        function wt(k) { return W[k]?W[k].substring(0,5):'00:00'; }
-        const d = new Date(dateInput.value + 'T12:00:00');
-        function dateForDow(dow) { let diff=dow-d.getDay(); if(diff<0)diff+=7; const x=new Date(d); x.setDate(x.getDate()+diff); return x.toISOString().substring(0,10); }
-        switch(key) {
-            case 'fajr_window':    timeInput.value = addMins(wt('fajr_e'),      -2); break;
-            case 'zawaal':         timeInput.value = addMins(wt('zawaal'),       -1); break;
-            case 'zuhr_window':    timeInput.value = addMins(wt('zuhr_e'),       -2); break;
-            case 'asr_window':     timeInput.value = addMins(wt('asr_boundary'), -2); break;
-            case 'maghrib_window': timeInput.value = addMins(wt('maghrib'),      -2); break;
-            case 'esha_window':    timeInput.value = addMins(wt('esha_e'),       -2); break;
-            case 'thu_maghrib': dateInput.value = dateForDow(4); timeInput.value = addMins(wt('maghrib'), -2); break;
-            case 'fri_zuhr':    dateInput.value = dateForDow(5); timeInput.value = addMins(wt('zuhr_e'),  -2); break;
+
+        function addMins(t, mins) {
+            const parts = t.split(':').map(Number);
+            let total = parts[0]*60 + parts[1] + mins;
+            if (total < 0)     total += 1440;
+            if (total >= 1440) total -= 1440;
+            return pad(Math.floor(total/60)) + ':' + pad(total % 60);
+        }
+        function wt(k) { return W[k] ? W[k].substring(0,5) : '00:00'; }
+
+        const simDateStr = dateInput.value;
+        const simDateObj = new Date(simDateStr + 'T12:00:00');
+        function dateForDow(targetDow) {
+            let diff = targetDow - simDateObj.getDay();
+            if (diff < 0) diff += 7;
+            const d = new Date(simDateObj);
+            d.setDate(d.getDate() + diff);
+            return d.toISOString().substring(0, 10);
+        }
+
+        switch (key) {
+            case 'fajr_window':    timeInput.value = addMins(wt('fajr_e'),       -2); break;
+            case 'zawaal':         timeInput.value = addMins(wt('zawaal'),        -1); break;
+            case 'zuhr_window':    timeInput.value = addMins(wt('zuhr_e'),        -2); break;
+            case 'asr_window':     timeInput.value = addMins(wt('asr_boundary'),  -2); break;
+            case 'maghrib_window': timeInput.value = addMins(wt('maghrib'),       -2); break;
+            case 'esha_window':    timeInput.value = addMins(wt('esha_e'),        -2); break;
+            case 'thu_maghrib':
+                dateInput.value = dateForDow(4);
+                timeInput.value = addMins(wt('maghrib'), -2); break;
+            case 'fri_zuhr':
+                dateInput.value = dateForDow(5);
+                timeInput.value = addMins(wt('zuhr_e'), -2); break;
         }
         const m = timeInput.value.match(/^(\d{1,2}):(\d{2})$/);
         if (m) document.getElementById('sim-slider').value = parseInt(m[1])*3600 + parseInt(m[2])*60;
     }
-    function simExit() { window.location.href = window.location.pathname; }
+
+    function simExit() {
+        window.location.href = '?';
+    }
+
     function simUpdateBadge() {
         const badge = document.getElementById('sim-badge');
         const panel = document.getElementById('sim-panel');
@@ -4388,6 +4457,7 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
             if (panel) panel.classList.add('sim-running');
         }
     }
+
     function simUpdatePanel() {
         const s = Math.floor(nowSec());
         const clk = document.getElementById('sim-clock-display');
@@ -4401,16 +4471,18 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
         const slider = document.getElementById('sim-slider');
         if (slider && !_SIM.paused && document.activeElement !== slider) slider.value = s;
     }
+
     setInterval(simUpdatePanel, 250);
     simUpdatePanel();
     simUpdateBadge();
+
     document.addEventListener('DOMContentLoaded', function(){
         const panel = document.getElementById('sim-panel');
         const btn   = document.getElementById('sim-collapse-btn');
         if (panel) panel.classList.remove('sim-collapsed');
         if (btn)   btn.textContent = '▼';
     });
-    <?php endif; // sim_active standard page ?>
+    <?php endif; ?>
 </script>
 
 </body>
