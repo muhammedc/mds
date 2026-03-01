@@ -14,6 +14,10 @@
 session_start();
 date_default_timezone_set('Africa/Johannesburg');
 
+/* ── MDS Version — update these two lines before every commit ── */
+define('MDS_VERSION',      '1.0.5');
+define('MDS_VERSION_DATE', '01 Mar 2026');
+
 /* ══════════════════════════════════════════════
    DATABASE CONNECTION
    ══════════════════════════════════════════════ */
@@ -24,9 +28,136 @@ try {
     die('Database connection failed: ' . $e->getMessage());
 }
 
-/* ── Load site settings (available everywhere after this point) ── */
+/* ── Auto-create any missing tables (safe on existing DBs) ── */
+try {
+    $db->exec("CREATE TABLE IF NOT EXISTS admin_users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL UNIQUE,
+        email TEXT DEFAULT '',
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'admin',
+        is_active INTEGER NOT NULL DEFAULT 1,
+        login_attempts INTEGER NOT NULL DEFAULT 0,
+        locked_until TEXT DEFAULT NULL,
+        last_login TEXT DEFAULT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS site_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        setting_key TEXT NOT NULL UNIQUE,
+        setting_value TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS perpetual_salaah_times (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        month INTEGER NOT NULL, date INTEGER NOT NULL,
+        fajr TEXT DEFAULT '00:00:00', sehri_ends TEXT DEFAULT '00:00:00',
+        sunrise TEXT DEFAULT '00:00:00', e_zuhr TEXT DEFAULT '00:00:00',
+        zuhr TEXT DEFAULT '00:00:00', zawaal TEXT DEFAULT '00:00:00',
+        e_asr_hanafi TEXT DEFAULT '00:00:00', e_asr_shafi TEXT DEFAULT '00:00:00',
+        asr TEXT DEFAULT '00:00:00', sunset TEXT DEFAULT '00:00:00',
+        maghrib TEXT DEFAULT '00:00:00', e_esha TEXT DEFAULT '00:00:00',
+        esha TEXT DEFAULT '00:00:00', UNIQUE(month,date)
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS perpetual_salaah_times_orig_2016 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        month INTEGER NOT NULL, date INTEGER NOT NULL,
+        fajr TEXT DEFAULT '00:00:00', sehri_ends TEXT DEFAULT '00:00:00',
+        sunrise TEXT DEFAULT '00:00:00', e_zuhr TEXT DEFAULT '00:00:00',
+        zuhr TEXT DEFAULT '00:00:00', zawaal TEXT DEFAULT '00:00:00',
+        e_asr_hanafi TEXT DEFAULT '00:00:00', e_asr_shafi TEXT DEFAULT '00:00:00',
+        asr TEXT DEFAULT '00:00:00', sunset TEXT DEFAULT '00:00:00',
+        maghrib TEXT DEFAULT '00:00:00', e_esha TEXT DEFAULT '00:00:00',
+        esha TEXT DEFAULT '00:00:00', UNIQUE(month,date)
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS community_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT DEFAULT '', content_type TEXT DEFAULT 'html',
+        content_html TEXT DEFAULT '', media_id INTEGER DEFAULT NULL,
+        image_fit TEXT DEFAULT 'contain', display_secs INTEGER DEFAULT 30,
+        start_dt TEXT DEFAULT NULL, end_dt TEXT DEFAULT NULL,
+        is_active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS funeral_notices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        deceased_name TEXT DEFAULT '', family_details TEXT DEFAULT '',
+        funeral_date_en TEXT DEFAULT '', funeral_date_hijri TEXT DEFAULT '',
+        leave_from TEXT DEFAULT '', departure_time TEXT DEFAULT '',
+        proceeding_to TEXT DEFAULT '', janazah_location TEXT DEFAULT '',
+        janazah_time TEXT DEFAULT '', display_secs INTEGER DEFAULT 30,
+        start_dt TEXT DEFAULT NULL, end_dt TEXT DEFAULT NULL,
+        is_active INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS ticker_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_text TEXT DEFAULT '', display_secs INTEGER DEFAULT 30,
+        start_dt TEXT DEFAULT NULL, end_dt TEXT DEFAULT NULL,
+        is_active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS ramadan_schedule (
+        id INTEGER PRIMARY KEY,
+        start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS ramadan_override (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        prayer_date TEXT NOT NULL UNIQUE,
+        fajr TEXT DEFAULT '00:00:00', zuhr TEXT DEFAULT '00:00:00',
+        asr TEXT DEFAULT '00:00:00', esha TEXT DEFAULT '00:00:00',
+        created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS media_library (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        filename TEXT NOT NULL, original_name TEXT DEFAULT '',
+        mime_type TEXT DEFAULT 'image/jpeg', file_size INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now'))
+    )");
+    // Seed essential settings if missing
+    $db->exec("INSERT OR IGNORE INTO site_settings (setting_key,setting_value) VALUES
+        ('site_name','Musjid Display System'),('site_url',''),('active_theme','green'),
+        ('custom_theme_json','{}'),('hijri_offset','0'),('madhab','hanafi'),
+        ('content_version','1'),('jummah_azaan','12:30:00'),
+        ('jummah_khutbah','12:45:00'),('jummah_jamaat','13:00:00'),('use_iftaar','0')");
+
+    // ── Patch columns that may be missing from MySQL→SQLite migrations ──
+    // SQLite ALTER TABLE only supports ADD COLUMN; wrap each in try/catch
+    $patch_cols = [
+            "ALTER TABLE admin_users      ADD COLUMN last_login   TEXT DEFAULT NULL",
+            "ALTER TABLE admin_users      ADD COLUMN email        TEXT DEFAULT ''",
+            "ALTER TABLE admin_users      ADD COLUMN login_attempts INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE admin_users      ADD COLUMN locked_until TEXT DEFAULT NULL",
+            "ALTER TABLE admin_users      ADD COLUMN is_active    INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE admin_users      ADD COLUMN updated_at   TEXT DEFAULT (datetime('now'))",
+            "ALTER TABLE community_messages ADD COLUMN image_fit  TEXT DEFAULT 'contain'",
+            "ALTER TABLE community_messages ADD COLUMN media_id   INTEGER DEFAULT NULL",
+            "ALTER TABLE community_messages ADD COLUMN content_type TEXT DEFAULT 'html'",
+            "ALTER TABLE community_messages ADD COLUMN sort_order INTEGER DEFAULT 0",
+            "ALTER TABLE community_messages ADD COLUMN updated_at TEXT DEFAULT (datetime('now'))",
+            "ALTER TABLE funeral_notices   ADD COLUMN display_secs INTEGER DEFAULT 30",
+            "ALTER TABLE funeral_notices   ADD COLUMN start_dt    TEXT DEFAULT NULL",
+            "ALTER TABLE funeral_notices   ADD COLUMN end_dt      TEXT DEFAULT NULL",
+            "ALTER TABLE funeral_notices   ADD COLUMN updated_at  TEXT DEFAULT (datetime('now'))",
+            "ALTER TABLE ticker_messages   ADD COLUMN sort_order  INTEGER DEFAULT 0",
+            "ALTER TABLE ticker_messages   ADD COLUMN updated_at  TEXT DEFAULT (datetime('now'))",
+            "ALTER TABLE ramadan_schedule  ADD COLUMN updated_at  TEXT DEFAULT (datetime('now'))",
+            "ALTER TABLE ramadan_override  ADD COLUMN updated_at  TEXT DEFAULT (datetime('now'))",
+    ];
+    foreach ($patch_cols as $sql) {
+        try { $db->exec($sql); } catch (Exception $e) { /* column already exists — ignore */ }
+    }
+} catch (Exception $e) {
+    // Non-fatal — log silently, don't crash the app
+    error_log('MDS table init error: ' . $e->getMessage());
+}
+
+
 function loadSiteSettings($db): array {
-    $settings = ['site_name' => 'Musjid Display System', 'site_url' => '', 'tinymce_api_key' => '', 'hijri_offset' => '0', 'madhab' => 'hanafi'];
+    $settings = ['site_name' => 'Musjid Display System', 'site_url' => '', 'tinymce_api_key' => '', 'hijri_offset' => '0', 'madhab' => 'hanafi', 'use_iftaar' => '0'];
     if (!$db) return $settings;
     $r = $db->query("SELECT setting_key, setting_value FROM site_settings");
     if ($r) while ($row = $r->fetch(PDO::FETCH_ASSOC)) $settings[$row['setting_key']] = $row['setting_value'];
@@ -67,6 +198,11 @@ function nmcThemePresets(): array {
                     'bg_dark'=>'#F7F5F0','bg_mid'=>'#EDE9E0','bg_accent'=>'#DDD6C8',
                     'cream'=>'#2A2420','cream_dim'=>'#5A524A',
             ],
+            'sage' => [
+                    'gold'=>'#d4a44c','gold_light'=>'#e8c97a','gold_dim'=>'#8a6232',
+                    'bg_dark'=>'#abd7b3','bg_mid'=>'#6b1d2e','bg_accent'=>'#4a121e',
+                    'cream'=>'#f5ede8','cream_dim'=>'#c8a898',
+            ],
     ];
 }
 
@@ -88,7 +224,7 @@ function nmcHexToRgb(string $hex): array {
 
 function nmcRenderThemeCSS(array $site): string {
     $active = $site['active_theme'] ?? 'green';
-    if ($active === 'green') return '';
+//    if ($active === 'green') return '';
     $v = nmcGetThemeVars($site);
 
     [$ar,$ag,$ab] = nmcHexToRgb($v['gold']);
@@ -157,6 +293,10 @@ function nmcRenderThemeCSS(array $site): string {
             '--accent-act2'    => "rgba({$ar},{$ag},{$ab},0.05)",
             '--accent-shadow'  => "rgba({$ar},{$ag},{$ab},0.20)",
             '--accent-shadow2' => "rgba({$ar},{$ag},{$ab},0.2)",
+            '--sidebar-bg-rgb' => "{$dr},{$dg},{$db}",
+            '--sidebar-bg'     => "rgba({$dr},{$dg},{$db},0.92)",
+            '--sidebar-bg-97'  => "rgba({$dr},{$dg},{$db},0.97)",
+            '--sidebar-bg-95'  => "rgba({$dr},{$dg},{$db},0.95)",
     ];
 
     $vars = '';
@@ -227,20 +367,137 @@ function upsertSetting($db, string $key, string $value): void {
     }
 }
 
-function getSystemVersion(): string {
-    $ver = '1.0.0';
-    if (function_exists('shell_exec') && is_dir(__DIR__ . '/.git')) {
-        $count = @shell_exec('git rev-list --count HEAD');
-        $hash  = @shell_exec('git rev-parse --short HEAD');
-        $ts    = @shell_exec('git show -s --format=%ct HEAD');
-        if ($count) {
-            $ver = '1.0.' . trim($count) . ($hash ? '-' . trim($hash) : '');
-            if ($ts) {
-                $ver .= ' (' . date('d M Y', (int)trim($ts)) . ')';
-            }
-        }
+/* ══════════════════════════════════════════════
+   SALAAH PRAYER TIME ENGINE (Perpetual Generator)
+   ══════════════════════════════════════════════ */
+class MDSPrayerEngine {
+    private $lat, $lng, $elv, $tzName, $method, $highLat, $jOffset, $buffers;
+    private $methods = [
+            'MWL'      => [18, 1, 0, 1, 17],
+            'ISNA'     => [15, 1, 0, 1, 15],
+            'Egypt'    => [19.5, 1, 0, 1, 17.5],
+            'Makkah'   => [18.5, 0, 0, 0, 90],
+            'Karachi'  => [18, 1, 0, 1, 18],
+            'Tehran'   => [17.7, 1, 4.5, 1, 14],
+            'Jafari'   => [16, 1, 4, 1, 14],
+            'Gulf'     => [19.5, 0, 0, 0, 90],
+            'Kuwait'   => [18, 1, 0, 1, 17.5],
+            'Qatar'    => [18, 0, 0, 0, 90],
+            'Singapore'=> [20, 1, 0, 1, 18],
+            'London'   => [14.6, 1, 0, 1, 14.6],
+    ];
+    public function __construct($lat,$lng,$elv,$tzName,$method,$highLat,$jOffset,$buffers){
+        $this->lat=(float)$lat; $this->lng=(float)$lng; $this->elv=(float)$elv;
+        $this->tzName=$tzName; $this->method=$method; $this->highLat=$highLat;
+        $this->jOffset=(int)$jOffset; $this->buffers=$buffers;
     }
-    return $ver;
+    private function dtr($d){return($d*M_PI)/180.0;}
+    private function rtd($r){return($r*180.0)/M_PI;}
+    public function calculateYear($year){
+        $daysInYear=(date('L',mktime(0,0,0,1,1,$year))?366:365);
+        $schedule=[]; $tzObj=new DateTimeZone($this->tzName);
+        for($d=1;$d<=$daysInYear;$d++){
+            $dateObj=new DateTime("$year-01-01 12:00:00",$tzObj);
+            $dateObj->modify("+".($d-1)." days");
+            $month=(int)$dateObj->format('m'); $day=(int)$dateObj->format('d');
+            $tzOffsetHours=$tzObj->getOffset($dateObj)/3600;
+            $times=$this->computeDayTimes($year,$month,$day,$tzOffsetHours);
+            $b=$this->buffers;
+            $schedule[]=['month'=>$month,'date'=>$day,
+                    'fajr'=>$this->formatTime($times['Fajr']+($this->jOffset/60)+(($b['fajr']??0)/60),false),
+                    'sehri'=>$this->formatTime($times['Fajr']+(($b['sehri']??-5)/60),false),
+                    'sunrise'=>$this->formatTime($times['Sunrise']+(($b['sunrise']??0)/60),true),
+                    'e_zuhr'=>$this->formatTime($times['Dhuhr']+(($b['e_zuhr']??5)/60),false),
+                    'zuhr'=>$this->formatTime($times['Dhuhr']+($this->jOffset/60)+(($b['zuhr']??5)/60),false),
+                    'zawaal'=>$this->formatTime($times['Dhuhr']+(($b['zawaal']??-5)/60),false),
+                    'e_asr_hanafi'=>$this->formatTime($times['Asr_H']+(($b['e_asr_hanafi']??0)/60),false),
+                    'e_asr_shafi'=>$this->formatTime($times['Asr_S']+(($b['e_asr_shafi']??0)/60),false),
+                    'asr'=>$this->formatTime($times['Asr_H']+($this->jOffset/60)+(($b['asr']??0)/60),false),
+                    'sunset'=>$this->formatTime($times['Sunset']+(($b['sunset']??0)/60),false),
+                    'maghrib'=>$this->formatTime($times['Maghrib']+(($b['maghrib']??3)/60),false),
+                    'e_esha'=>$this->formatTime($times['Isha']+(($b['e_esha']??0)/60),false),
+                    'esha'=>$this->formatTime($times['Isha']+($this->jOffset/60)+(($b['esha']??0)/60),false),
+            ];
+        }
+        return $schedule;
+    }
+    private function computeDayTimes($y,$m,$d,$tz){
+        $params=$this->methods[$this->method]??$this->methods['MWL'];
+        [$fajrAngle,$maghribIsDeg,$maghribVal,$ishaIsDeg,$ishaVal]=$params;
+        $jd=$this->getJulianDate($y,$m,$d)-$this->lng/(15*24);
+        $times=['Fajr'=>5,'Sunrise'=>6,'Dhuhr'=>12,'Asr_S'=>13,'Asr_H'=>13,'Sunset'=>18,'Maghrib'=>18,'Isha'=>18];
+        for($i=1;$i<=2;$i++) $times=$this->computeTimesIter($times,$jd,$tz,$fajrAngle,$maghribIsDeg,$maghribVal,$ishaIsDeg,$ishaVal);
+        return $this->adjustHighLat($times,$fajrAngle,$ishaVal,$ishaIsDeg);
+    }
+    private function computeTimesIter($t,$jd,$tz,$fA,$mIsDeg,$mV,$iIsDeg,$iV){
+        $sun=$this->sunPosition($jd+$t['Dhuhr']/24);
+        $dhuhr=12+$tz-$this->lng/15-$sun['eqt'];
+        $elevAdj=($this->elv>0)?(0.0347*sqrt($this->elv)):0;
+        $horizAngle=0.833+$elevAdj;
+        $sr=$dhuhr-$this->hourAngle($horizAngle,$jd+$t['Sunrise']/24);
+        $ss=$dhuhr+$this->hourAngle($horizAngle,$jd+$t['Sunset']/24);
+        $fajr=$dhuhr-$this->hourAngle($fA,$jd+$t['Fajr']/24);
+        $maghrib=($mIsDeg==1&&$mV>0)?$dhuhr+$this->hourAngle($mV,$jd+$t['Maghrib']/24):$ss+($mV/60);
+        $isha=($iIsDeg==1)?$dhuhr+$this->hourAngle($iV,$jd+$t['Isha']/24):$maghrib+($iV/60);
+        $asrS=$dhuhr+$this->asrAngle(1,$jd+$t['Asr_S']/24);
+        $asrH=$dhuhr+$this->asrAngle(2,$jd+$t['Asr_H']/24);
+        return['Fajr'=>$fajr,'Sunrise'=>$sr,'Dhuhr'=>$dhuhr,'Asr_S'=>$asrS,'Asr_H'=>$asrH,'Sunset'=>$ss,'Maghrib'=>$maghrib,'Isha'=>$isha];
+    }
+    private function adjustHighLat($times,$fajrAngle,$ishaVal,$ishaIsDeg){
+        if($this->highLat==='none') return $times;
+        $nightTime=$this->timeDiff($times['Sunset'],$times['Sunrise']);
+        $fajrDiff=$this->nightPortion($fajrAngle)*$nightTime;
+        if(is_nan($times['Fajr'])||$this->timeDiff($times['Fajr'],$times['Sunrise'])>$fajrDiff) $times['Fajr']=$times['Sunrise']-$fajrDiff;
+        if($ishaIsDeg==1){
+            $ishaDiff=$this->nightPortion($ishaVal)*$nightTime;
+            if(is_nan($times['Isha'])||$this->timeDiff($times['Sunset'],$times['Isha'])>$ishaDiff) $times['Isha']=$times['Sunset']+$ishaDiff;
+        }
+        return $times;
+    }
+    private function nightPortion($angle){
+        if($this->highLat==='anglebased') return 1/60*$angle;
+        if($this->highLat==='nightmiddle') return 1/2;
+        if($this->highLat==='oneseventh') return 1/7;
+        return 0;
+    }
+    private function timeDiff($t1,$t2){$d=$t2-$t1; if($d<0)$d+=24; return $d;}
+    private function sunPosition($jd){
+        $D=$jd-2451545.0; $g=fmod(357.529+0.98560028*$D,360); $q=fmod(280.459+0.98564736*$D,360);
+        $L=fmod($q+1.915*sin($this->dtr($g))+0.020*sin($this->dtr(2*$g)),360);
+        $e=23.439-0.00000036*$D;
+        $ra=$this->rtd(atan2(cos($this->dtr($e))*sin($this->dtr($L)),cos($this->dtr($L))))/15;
+        $ra=$ra<0?$ra+24:$ra;
+        $decl=$this->rtd(asin(sin($this->dtr($e))*sin($this->dtr($L))));
+        return['decl'=>$decl,'eqt'=>$q/15-$ra];
+    }
+    private function hourAngle($angle,$jd){
+        $sun=$this->sunPosition($jd);
+        $val=-(sin($this->dtr($angle))+sin($this->dtr($this->lat))*sin($this->dtr($sun['decl'])))/(cos($this->dtr($this->lat))*cos($this->dtr($sun['decl'])));
+        if($val>1) return 0; if($val<-1) return 12;
+        return $this->rtd(acos($val))/15;
+    }
+    private function asrAngle($factor,$jd){
+        $sun=$this->sunPosition($jd);
+        $val=atan(1/($factor+tan($this->dtr(abs($this->lat-$sun['decl'])))));
+        $val=-(sin($val)-sin($this->dtr($this->lat))*sin($this->dtr($sun['decl'])))/(cos($this->dtr($this->lat))*cos($this->dtr($sun['decl'])));
+        return $this->rtd(acos($val))/15;
+    }
+    private function getJulianDate($y,$m,$d){
+        if($m<=2){$y-=1;$m+=12;}
+        $a=floor($y/100); $b=2-$a+floor($a/4);
+        return floor(365.25*($y+4716))+floor(30.6001*($m+1))+$d+$b-1524.5;
+    }
+    private function formatTime($f,$isSunrise=false){
+        if(is_nan($f)) return "00:00:00";
+        $f=fmod($f+24,24); $h=floor($f); $m_float=($f-$h)*60;
+        $m=$isSunrise?round($m_float):ceil($m_float);
+        if($m>=60){$m-=60;$h=($h+1)%24;}
+        return sprintf("%02d:%02d:00",$h,$m);
+    }
+}
+
+function getSystemVersion(): string {
+    return MDS_VERSION . ' · ' . MDS_VERSION_DATE;
 }
 
 /* ══════════════════════════════════════════════
@@ -399,6 +656,10 @@ if ($action === 'save_settings' && $_SERVER['REQUEST_METHOD'] === 'POST' && isSu
         $rem_copy = !empty($_POST['remove_copyright']) ? '1' : '0';
         upsertSetting($db, 'remove_copyright', $rem_copy);
         $site['remove_copyright'] = (int)$rem_copy;
+
+        $use_iftaar = !empty($_POST['use_iftaar']) ? '1' : '0';
+        upsertSetting($db, 'use_iftaar', $use_iftaar);
+        $site['use_iftaar'] = (int)$use_iftaar;
         bumpContentVersion($db);
 
         flash('success', 'Site settings updated.');
@@ -409,7 +670,7 @@ if ($action === 'save_settings' && $_SERVER['REQUEST_METHOD'] === 'POST' && isSu
 /* ---------- SAVE THEME (all admins) ---------- */
 if ($action === 'save_theme' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     csrfCheck();
-    $allowed_themes = ['green','blue','burgundy','grey','white','custom'];
+    $allowed_themes = ['green','blue','burgundy','grey','white','sage','custom'];
     $new_theme = trim($_POST['theme'] ?? 'green');
     if (!in_array($new_theme, $allowed_themes)) $new_theme = 'green';
 
@@ -496,50 +757,45 @@ if ($action === 'do_restore' && $_SERVER['REQUEST_METHOD'] === 'POST' && isSuper
 
     if ($confirm_phrase !== $required) {
         $errors[] = 'Confirmation phrase did not match. Type exactly: ' . $required;
-        $action   = 'restore'; // fall through to restore page with error
+        $action   = 'restore';
     } else {
-        // Run inside a transaction so it's atomic
         $ok = false;
-        $db->beginTransaction();
         try {
+            // Move beginTransaction inside the try block
+            $db->beginTransaction();
+
             // 1. Wipe the live table data
-            $r1 = $db->exec("DELETE FROM perpetual_salaah_times");
-            if ($r1 === false) throw new Exception("DELETE failed");
+            $db->exec("DELETE FROM perpetual_salaah_times");
 
             // 2. Copy every row from the backup
-            $r2 = $db->exec("
-                INSERT INTO perpetual_salaah_times
-                SELECT * FROM perpetual_salaah_times_orig_2016
-            ");
-            if ($r2 === false) throw new Exception("INSERT failed");
+            $stmt = $db->exec("INSERT INTO perpetual_salaah_times SELECT * FROM perpetual_salaah_times_orig_2016");
 
-            $rows = $r2;
+            $rows = $stmt;
             $db->commit();
             $ok = true;
 
-            // Log the restore
-            // Audit log the restore
+            // Audit log the restore (using prepared statement for safety)
             $audit_user   = $_SESSION['admin_username'] ?? 'unknown';
-            $audit_role   = $_SESSION['admin_role']     ?? 'unknown';
-            $audit_ip     = $_SERVER['REMOTE_ADDR']     ?? '';
-            $audit_ua     = substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 500);
-            $audit_detail = "$rows rows copied from perpetual_salaah_times_orig_2016 into perpetual_salaah_times";
-            $audit_json   = json_encode(['rows_restored' => $rows, 'source_table' => 'perpetual_salaah_times_orig_2016', 'target_table' => 'perpetual_salaah_times']);
-            $stmt = $db->prepare("
-                INSERT INTO audit_log (admin_user, admin_role, action, target_table, detail, ip_address, user_agent, result, extra_json)
-                VALUES (?, ?, 'restore_backup', 'perpetual_salaah_times', ?, ?, ?, 'success', ?)
-            ");
-            $stmt->execute([$audit_user, $audit_role, $audit_detail, $audit_ip, $audit_ua, $audit_json]);
-            flash('success', "✅ Restore complete. $rows rows copied from backup into live table. Performed by: " . $_SESSION['admin_username'] . " at " . date('Y-m-d H:i:s'));
+            $audit_detail = "$rows rows copied from backup";
+
+            // Check if audit_log table exists before inserting, or wrap in its own try-catch
+            $logStmt = $db->prepare("INSERT INTO audit_log (admin_user, action, detail, result) VALUES (?, 'restore_backup', ?, 'success')");
+            $logStmt->execute([$audit_user, $audit_detail]);
+
+            flash('success', "✅ Restore complete. $rows rows copied from backup.");
+
         } catch (Exception $ex) {
-            $db->rollBack();
-            flash('error', '❌ Restore failed and was rolled back. Reason: ' . $ex->getMessage());
+            // ONLY rollback if a transaction is actually active
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            error_log("Restore Error: " . $ex->getMessage());
+            flash('error', '❌ Restore failed: ' . $ex->getMessage());
         }
 
         redirect('admin.php?action=restore');
     }
 }
-
 /* ══════════════════════════════════════════════
    COMMUNITY MESSAGES — CRUD
    ══════════════════════════════════════════════ */
@@ -609,8 +865,38 @@ if (in_array($action, ['save_community_msg']) && $_SERVER['REQUEST_METHOD'] === 
 }
 
 if ($action === 'delete_community_msg') {
-    $id = (int)($_GET['id'] ?? 0);
-    if ($id) { $db->exec("DELETE FROM community_messages WHERE id='$id'"); bumpContentVersion($db); flash('success','Deleted.'); }
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') csrfCheck();
+    $id = (int)($_POST['id'] ?? $_GET['id'] ?? 0);
+
+    if ($id) {
+        try {
+            // 1. Find the media_id associated with this message before deleting it
+            $stmt = $db->prepare("SELECT media_id FROM community_messages WHERE id = ?");
+            $stmt->execute([$id]);
+            $msg = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            // 2. Delete the community message
+            $stmt = $db->prepare("DELETE FROM community_messages WHERE id = ?");
+            $stmt->execute([$id]);
+
+            if ($stmt->rowCount() > 0) {
+                // 3. If a media_id existed, delete the orphaned image from the media table
+                if (!empty($msg['media_id'])) {
+                    $mediaStmt = $db->prepare("DELETE FROM media WHERE id = ?");
+                    $mediaStmt->execute([$msg['media_id']]);
+                }
+
+                bumpContentVersion($db);
+                flash('success', 'Community message and associated media deleted.');
+            } else {
+                flash('error', "No message found with ID #$id.");
+            }
+        } catch (Exception $e) {
+            flash('error', 'Delete failed: ' . $e->getMessage());
+        }
+    } else {
+        flash('error', 'Invalid message ID.');
+    }
     redirect('admin.php?action=community_messages');
 }
 if ($action === 'toggle_community_msg') {
@@ -659,8 +945,25 @@ if ($action === 'save_funeral' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     redirect('admin.php?action=funeral_notices');
 }
 if ($action === 'delete_funeral') {
-    $id = (int)($_GET['id'] ?? 0);
-    if ($id) { $db->exec("DELETE FROM funeral_notices WHERE id='$id'"); bumpContentVersion($db); flash('success','Deleted.'); }
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') csrfCheck();
+    $id = (int)($_POST['id'] ?? $_GET['id'] ?? 0);
+    if ($id) {
+        try {
+            $stmt = $db->prepare("DELETE FROM funeral_notices WHERE id = ?");
+            $stmt->execute([$id]);
+            $rows = $stmt->rowCount();
+            if ($rows > 0) {
+                bumpContentVersion($db);
+                flash('success', "Funeral notice #$id deleted successfully.");
+            } else {
+                flash('error', "No funeral notice found with ID #$id. It may have already been deleted.");
+            }
+        } catch (Exception $e) {
+            flash('error', 'Delete failed: ' . $e->getMessage());
+        }
+    } else {
+        flash('error', 'Invalid funeral notice ID.');
+    }
     redirect('admin.php?action=funeral_notices');
 }
 if ($action === 'toggle_funeral') {
@@ -701,8 +1004,16 @@ if ($action === 'save_ticker' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     redirect('admin.php?action=ticker_messages');
 }
 if ($action === 'delete_ticker') {
-    $id = (int)($_GET['id'] ?? 0);
-    if ($id) { $db->exec("DELETE FROM ticker_messages WHERE id='$id'"); bumpContentVersion($db); flash('success','Deleted.'); }
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') csrfCheck();
+    $id = (int)($_POST['id'] ?? $_GET['id'] ?? 0);
+    if ($id) {
+        try {
+            $stmt = $db->prepare("DELETE FROM ticker_messages WHERE id = ?");
+            $stmt->execute([$id]);
+            if ($stmt->rowCount() > 0) { bumpContentVersion($db); flash('success', 'Ticker message deleted.'); }
+            else flash('error', "No ticker message found with ID #$id.");
+        } catch (Exception $e) { flash('error', 'Delete failed: ' . $e->getMessage()); }
+    } else { flash('error', 'Invalid ticker ID.'); }
     redirect('admin.php?action=ticker_messages');
 }
 if ($action === 'toggle_ticker') {
@@ -757,10 +1068,17 @@ if ($action === 'save_user' && $_SERVER['REQUEST_METHOD'] === 'POST' && isSuperA
 }
 
 if ($action === 'delete_user' && isSuperAdmin()) {
-    $uid = (int)($_GET['uid'] ?? 0);
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') csrfCheck();
+    $uid = (int)($_POST['uid'] ?? $_GET['uid'] ?? 0);
     if ($uid && $uid !== (int)$_SESSION['admin_id']) {
-        $db->exec("DELETE FROM admin_users WHERE id='$uid'");
-        flash('success', 'User deleted.');
+        try {
+            $stmt = $db->prepare("DELETE FROM admin_users WHERE id = ?");
+            $stmt->execute([$uid]);
+            if ($stmt->rowCount() > 0) flash('success', 'User deleted.');
+            else flash('error', "No user found with ID #$uid.");
+        } catch (Exception $e) { flash('error', 'Delete failed: ' . $e->getMessage()); }
+    } elseif ($uid === (int)$_SESSION['admin_id']) {
+        flash('error', 'You cannot delete your own account.');
     }
     redirect('admin.php?action=users');
 }
@@ -808,12 +1126,17 @@ if ($action === 'ramadan_setup' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $end_sql   = date('Y-m-d', $end_ts);
 
     /* Wipe existing override rows and schedule */
-    $db->exec("DELETE FROM ramadan_override");
-    $db->exec("DELETE FROM ramadan_schedule");
+    try {
+        $db->exec("DELETE FROM ramadan_override");
+        $db->exec("DELETE FROM ramadan_schedule");
 
-    /* Insert new schedule control row */
-    $db->exec("INSERT INTO ramadan_schedule (id, start_date, end_date, is_active)
-        VALUES (1, '$start_sql', '$end_sql', 0)");
+        /* Insert new schedule control row */
+        $db->exec("INSERT INTO ramadan_schedule (id, start_date, end_date, is_active)
+            VALUES (1, '$start_sql', '$end_sql', 0)");
+    } catch (Exception $e) {
+        flash('error', 'DB Error creating schedule: ' . $e->getMessage());
+        redirect('admin.php?action=ramadan');
+    }
 
     /* Populate override rows from perpetual_salaah_times */
     $inserted = 0;
@@ -923,8 +1246,79 @@ if ($action === 'ramadan_reset') {
 }
 
 /* ══════════════════════════════════════════════
-   DATA FETCHING
+   SALAAH GENERATOR — ACTION HANDLERS (superadmin only)
    ══════════════════════════════════════════════ */
+$sg_preview = null;
+$sg_flash_success = '';
+$sg_flash_error   = '';
+
+if ($action === 'salaah_generator' && isSuperAdmin()) {
+    if (isset($_POST['export_csv']) && !empty($_SESSION['gen_cache'])) {
+        $data = $_SESSION['gen_cache'];
+        header('Content-Type: text/csv; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="timetable_perpetual.csv"');
+        $output = fopen('php://output', 'w');
+        fputs($output, "sep=,\n");
+        fputcsv($output, ['Month','Date','Fajr','Sehri','Sunrise','Zuhr_E','Zuhr_J','Zawaal','Asr_H','Asr_S','Asr_J','Sunset','Maghrib','Esha_E','Esha_J'], ",", "\"", "\\");
+        foreach ($data as $r) { fputcsv($output, array_values($r), ",", "\"", "\\"); }
+        fclose($output); exit;
+    }
+
+    if (isset($_POST['generate_preview'])) {
+        csrfCheck();
+        $engine = new MDSPrayerEngine(
+                $_POST['lat'] ?? '-26.2041',
+                $_POST['lng'] ?? '28.0473',
+                (!empty($_POST['use_elv']) ? ($_POST['elv'] ?? 0) : 0),
+                $_POST['timezone'] ?? 'Africa/Johannesburg',
+                $_POST['calc_method'] ?? 'MWL',
+                $_POST['high_lat'] ?? 'none',
+                $_POST['j_offset'] ?? 0,
+                $_POST['buf'] ?? []
+        );
+        $sg_preview = $engine->calculateYear(2024);
+        $_SESSION['gen_cache'] = $sg_preview;
+        $sg_flash_success = "Preview generated successfully for all 366 days (including Feb 29th).";
+    }
+
+    if (isset($_POST['commit_data'])) {
+        csrfCheck();
+        if (($_POST['safety'] ?? '') === "CONFIRM OVERWRITE") {
+            $data = $_SESSION['gen_cache'] ?? null;
+            if ($data) {
+                $targets = [];
+                if (isset($_POST['target_live']))   $targets[] = 'perpetual_salaah_times';
+                if (isset($_POST['target_backup'])) $targets[] = 'perpetual_salaah_times_orig_2016';
+                if (empty($targets)) {
+                    $sg_flash_error = "Please select at least one target table to overwrite.";
+                } else {
+                    try {
+                        $db->beginTransaction();
+                        foreach ($targets as $table) {
+                            $db->exec("DELETE FROM $table");
+                            $stmt = $db->prepare("INSERT INTO $table (month,date,fajr,sehri_ends,sunrise,e_zuhr,zuhr,zawaal,e_asr_hanafi,e_asr_shafi,asr,sunset,maghrib,e_esha,esha) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+                            foreach ($data as $r) { $stmt->execute(array_values($r)); }
+                        }
+                        bumpContentVersion($db);
+                        $db->commit();
+                        $sg_flash_success = "✅ Tables rebuilt successfully. Public displays have been updated.";
+                        $sg_preview = $data;
+                    } catch (Exception $e) {
+                        $db->rollBack();
+                        $sg_flash_error = "Database Error: " . $e->getMessage();
+                    }
+                }
+            } else {
+                $sg_flash_error = "No generated data found. Please calculate preview first.";
+            }
+        } else {
+            $sg_flash_error = "Safety phrase incorrect. Overwrite aborted.";
+            $sg_preview = $_SESSION['gen_cache'] ?? null;
+        }
+    }
+}
+
+
 $times_row   = null;
 $month_rows  = [];   // for grid view — all days of chosen month
 $edit_view   = $_GET['view'] ?? 'day';   // 'day' or 'grid'
@@ -1045,8 +1439,8 @@ $readonly_fields = [
         ['key'=>'sunrise',      'label'=>'Sunrise',              'icon'=>'🌄'],
         ['key'=>'zawaal',       'label'=>'Zawaal',               'icon'=>'🕛'],
         ['key'=>'e_zuhr',       'label'=>'Zuhr Earliest',        'icon'=>'☀️'],
-        ['key'=>'e_asr_hanafi', 'label'=>'Asr Earliest (Hanafi)','icon'=>'🌤️'],
-        ['key'=>'e_asr_shafi',  'label'=>'Asr Earliest (Shafi)', 'icon'=>'🌤️'],
+        ['key'=>'e_asr_hanafianafi', 'label'=>'Asr Earliest (Hanafi)','icon'=>'🌤️'],
+        ['key'=>'e_asr_shafihafi',  'label'=>'Asr Earliest (Shafi)', 'icon'=>'🌤️'],
         ['key'=>'sunset',       'label'=>'Sunset / Iftaar',      'icon'=>'🌆'],
         ['key'=>'e_esha',       'label'=>'Esha Earliest',        'icon'=>'🌃'],
 ];
@@ -1060,6 +1454,10 @@ $readonly_fields = [
     <meta name="theme-color" content="#07170A">
     <title>MDS Admin Panel</title>
     <link href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@700&family=Nunito:wght@300;400;600;700;800&display=swap" rel="stylesheet">
+    <?php if ($action === 'salaah_generator'): ?>
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <?php endif; ?>
     <style>
         :root {
             --gold:        #C9A84C;
@@ -1078,427 +1476,453 @@ $readonly_fields = [
             --shadow:      0 8px 32px rgba(0,0,0,0.45);
             --input-bg:    rgba(7,23,10,0.7);
             --input-border:rgba(201,168,76,0.28);
-        }
-        *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-        html{scroll-behavior:smooth;}
-        body{
-            background-color:var(--green-dark);
-            color:var(--cream);
-            font-family:'Nunito',sans-serif;
-            min-height:100vh;
-            overflow-x:hidden;
-        }
-        body::before{
-            content:'';
-            position:fixed;
-            inset:0;
-            background-image:
-                    radial-gradient(ellipse 90% 55% at 50% -5%,rgba(201,168,76,0.12) 0%,transparent 65%),
-                    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Cg fill='none' stroke='rgba(201,168,76,0.045)' stroke-width='1'%3E%3Cpath d='M40 4 L76 40 L40 76 L4 40Z'/%3E%3Cpath d='M40 18 L62 40 L40 62 L18 40Z'/%3E%3Ccircle cx='40' cy='40' r='10'/%3E%3C/g%3E%3C/svg%3E");
-            background-size:auto,80px 80px;
-            pointer-events:none;
-            z-index:0;
-        }
 
-        /* ── Layout ── */
-        .layout{display:flex;min-height:100vh;position:relative;z-index:1;}
+            *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+            html{scroll-behavior:smooth;}
+            body{
+                background-color:var(--green-dark);
+                color:var(--cream);
+                font-family:'Nunito',sans-serif;
+                min-height:100vh;
+                overflow-x:hidden;
+            }
+            body::before{
+                content:'';
+                position:fixed;
+                inset:0;
+                background-image:
+                        radial-gradient(ellipse 90% 55% at 50% -5%,rgba(201,168,76,0.12) 0%,transparent 65%),
+                        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Cg fill='none' stroke='rgba(201,168,76,0.045)' stroke-width='1'%3E%3Cpath d='M40 4 L76 40 L40 76 L4 40Z'/%3E%3Cpath d='M40 18 L62 40 L40 62 L18 40Z'/%3E%3Ccircle cx='40' cy='40' r='10'/%3E%3C/g%3E%3C/svg%3E");
+                background-size:auto,80px 80px;
+                pointer-events:none;
+                z-index:0;
+            }
 
-        /* ── Sidebar ── */
-        .sidebar{
-            width:240px;
-            flex-shrink:0;
-            background:rgba(7,23,10,0.92);
-            border-right:1px solid var(--card-border);
-            display:flex;
-            flex-direction:column;
-            padding:0 0 24px;
-            backdrop-filter:blur(16px);
-            position:sticky;
-            top:0;
-            height:100vh;
-            overflow-y:auto;
-        }
-        .sidebar-logo{
-            padding:28px 22px 22px;
-            border-bottom:1px solid var(--card-border);
-            text-align:center;
-        }
-        .sidebar-mosque{font-size:36px;display:block;animation:glow-pulse 3.5s ease-in-out infinite;}
-        @keyframes glow-pulse{
-            0%,100%{filter:drop-shadow(0 0 8px rgba(201,168,76,0.35));}
-            50%{filter:drop-shadow(0 0 20px rgba(201,168,76,0.8));}
-        }
-        .sidebar-brand{
-            font-family:'Cinzel Decorative',serif;
-            font-size:11px;
-            color:var(--gold);
-            letter-spacing:1.5px;
-            margin-top:8px;
-            line-height:1.4;
-        }
-        .sidebar-sub{font-size:9px;color:var(--gold-dim);letter-spacing:3px;text-transform:uppercase;}
-        .sidebar-user{
-            padding:16px 20px;
-            border-bottom:1px solid var(--card-border);
-            font-size:11px;
-            color:var(--cream-dim);
-        }
-        .sidebar-user strong{display:block;color:var(--gold-light);font-size:13px;margin-bottom:2px;}
-        .badge-role{
-            display:inline-block;
-            font-size:8px;
-            letter-spacing:1.5px;
-            text-transform:uppercase;
-            padding:2px 8px;
-            border-radius:20px;
-            background:rgba(201,168,76,0.15);
-            border:1px solid rgba(201,168,76,0.3);
-            color:var(--gold);
-        }
-        .nav{padding:16px 0;}
-        .nav-label{font-size:8px;letter-spacing:3px;text-transform:uppercase;color:var(--gold-dim);padding:6px 22px 4px;}
-        .nav a{
-            display:flex;
-            align-items:center;
-            gap:10px;
-            padding:10px 22px;
-            color:var(--cream-dim);
-            text-decoration:none;
-            font-size:13px;
-            font-weight:600;
-            letter-spacing:0.3px;
-            transition:background 0.2s,color 0.2s;
-            border-left:2px solid transparent;
-        }
-        .nav a:hover{background:rgba(201,168,76,0.07);color:var(--cream);}
-        .nav a.active{background:rgba(201,168,76,0.1);color:var(--gold-light);border-left-color:var(--gold);}
-        .nav-icon{font-size:16px;width:20px;text-align:center;flex-shrink:0;}
-        .sidebar-footer{margin-top:auto;padding:16px 22px;}
-        .btn-logout{
-            display:flex;align-items:center;gap:8px;
-            width:100%;padding:9px 14px;
-            background:var(--red-bg);border:1px solid var(--red-border);
-            color:var(--red-soft);font-family:'Nunito',sans-serif;font-size:12px;font-weight:700;
-            border-radius:10px;cursor:pointer;text-decoration:none;
-            transition:background 0.2s;
-        }
-        .btn-logout:hover{background:rgba(192,57,43,0.25);}
+            /* ── Layout ── */
+            .layout{display:flex;min-height:100vh;position:relative;z-index:1;}
 
-        /* ── Main Content ── */
-        .main{flex:1;padding:32px 32px 80px;overflow-x:hidden;}
-        .page-header{margin-bottom:28px;}
-        .page-title{
-            font-family:'Cinzel Decorative',serif;
-            font-size:clamp(16px,2.5vw,22px);
-            color:var(--gold);
-            letter-spacing:1.5px;
-            margin-bottom:4px;
-        }
-        .page-desc{font-size:12px;color:var(--cream-dim);letter-spacing:1px;}
-        .gold-rule{height:1px;background:linear-gradient(to right,transparent,var(--gold),transparent);margin:14px 0 24px;}
+            /* ── Sidebar ── */
+            .sidebar {
+                width: 240px;
+                flex-shrink: 0;
+                /* Use the theme variable here */
+                background: var(--sidebar-bg) !important;
+                border-right: 1px solid var(--card-border);
+                display: flex;
+                flex-direction: column;
+                padding: 0 0 24px;
+                backdrop-filter: blur(16px);
+                position: sticky;
+                top: 0;
+                height: 100vh;
+                overflow-y: auto;
+                z-index: 100;
+            }
+            .sidebar-logo{
+                padding:28px 22px 22px;
+                border-bottom:1px solid var(--card-border);
+                text-align:center;
+            }
+            .sidebar-mosque{font-size:36px;display:block;animation:glow-pulse 3.5s ease-in-out infinite;}
+            @keyframes glow-pulse{
+                0%,100%{filter:drop-shadow(0 0 8px rgba(201,168,76,0.35));}
+                50%{filter:drop-shadow(0 0 20px rgba(201,168,76,0.8));}
+            }
+            .sidebar-brand{
+                font-family:'Cinzel Decorative',serif;
+                font-size:11px;
+                color:var(--gold);
+                letter-spacing:1.5px;
+                margin-top:8px;
+                line-height:1.4;
+            }
+            .sidebar-sub{font-size:9px;color:var(--gold-dim);letter-spacing:3px;text-transform:uppercase;}
+            .sidebar-user{
+                padding:16px 20px;
+                border-bottom:1px solid var(--card-border);
+                font-size:11px;
+                color:var(--cream-dim);
+            }
+            .sidebar-user strong{display:block;color:var(--gold-light);font-size:13px;margin-bottom:2px;}
+            .badge-role{
+                display:inline-block;
+                font-size:8px;
+                letter-spacing:1.5px;
+                text-transform:uppercase;
+                padding:2px 8px;
+                border-radius:20px;
+                background:rgba(201,168,76,0.15);
+                border:1px solid rgba(201,168,76,0.3);
+                color:var(--gold);
+            }
+            .nav{padding:16px 0;}
+            .nav-label{font-size:8px;letter-spacing:3px;text-transform:uppercase;color:var(--gold-dim);padding:6px 22px 4px;}
+            .nav a{
+                display:flex;
+                align-items:center;
+                gap:10px;
+                padding:10px 22px;
+                color:var(--cream-dim);
+                text-decoration:none;
+                font-size:13px;
+                font-weight:600;
+                letter-spacing:0.3px;
+                transition:background 0.2s,color 0.2s;
+                border-left:2px solid transparent;
+            }
+            .nav a:hover{background:rgba(201,168,76,0.07);color:var(--cream);}
+            .nav a.active{background:rgba(201,168,76,0.1);color:var(--gold-light);border-left-color:var(--gold);}
+            .nav-icon{font-size:16px;width:20px;text-align:center;flex-shrink:0;}
+            .sidebar-footer{margin-top:auto;padding:16px 22px;}
+            .btn-logout{
+                display:flex;align-items:center;gap:8px;
+                width:100%;padding:9px 14px;
+                background:var(--red-bg);border:1px solid var(--red-border);
+                color:var(--red-soft);font-family:'Nunito',sans-serif;font-size:12px;font-weight:700;
+                border-radius:10px;cursor:pointer;text-decoration:none;
+                transition:background 0.2s;
+            }
+            .btn-logout:hover{background:rgba(192,57,43,0.25);}
 
-        /* ── Cards ── */
-        .card{
-            background:var(--card-bg);
-            border:1px solid var(--card-border);
-            border-radius:18px;
-            overflow:hidden;
-            backdrop-filter:blur(10px);
-            box-shadow:var(--shadow);
-            animation:fadein 0.6s ease both;
-        }
-        @keyframes fadein{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:translateY(0);}}
-        .card-top-rule{height:2px;background:linear-gradient(to right,transparent,var(--gold),transparent);}
-        .card-body{padding:28px 30px;}
+            /* ── Main Content ── */
+            .main{flex:1;padding:32px 32px 80px;overflow-x:hidden;}
+            .page-header{margin-bottom:28px;}
+            .page-title{
+                font-family:'Cinzel Decorative',serif;
+                font-size:clamp(16px,2.5vw,22px);
+                color:var(--gold);
+                letter-spacing:1.5px;
+                margin-bottom:4px;
+            }
+            .page-desc{font-size:12px;color:var(--cream-dim);letter-spacing:1px;}
+            .gold-rule{height:1px;background:linear-gradient(to right,transparent,var(--gold),transparent);margin:14px 0 24px;}
 
-        /* ── Forms ── */
-        .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
-        .form-grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;}
-        .form-group{display:flex;flex-direction:column;gap:5px;}
-        .form-group.full{grid-column:1/-1;}
-        .form-label{
-            font-size:10px;
-            text-transform:uppercase;
-            letter-spacing:2px;
-            color:var(--gold-dim);
-            font-weight:700;
-        }
-        .form-input, .form-select{
-            background:var(--input-bg);
-            border:1px solid var(--input-border);
-            border-radius:10px;
-            color:var(--cream);
-            font-family:'Nunito',sans-serif;
-            font-size:14px;
-            padding:10px 14px;
-            transition:border-color 0.2s,box-shadow 0.2s;
-            width:100%;
-            outline:none;
-        }
-        .form-input:focus,.form-select:focus{
-            border-color:var(--gold);
-            box-shadow:0 0 0 3px rgba(201,168,76,0.12);
-        }
-        .form-input.time-input{font-variant-numeric:tabular-nums;letter-spacing:2px;font-size:15px;font-weight:700;}
-        .form-select option{background:var(--green-mid);}
+            /* ── Cards ── */
+            .card{
+                background:var(--card-bg);
+                border:1px solid var(--card-border);
+                border-radius:18px;
+                overflow:hidden;
+                backdrop-filter:blur(10px);
+                box-shadow:var(--shadow);
+                animation:fadein 0.6s ease both;
+            }
+            @keyframes fadein{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:translateY(0);}}
+            .card-top-rule{height:2px;background:linear-gradient(to right,transparent,var(--gold),transparent);}
+            .card-body{padding:28px 30px;}
 
-        .group-label{
-            font-size:9px;letter-spacing:3px;text-transform:uppercase;
-            color:var(--gold-dim);
-            grid-column:1/-1;
-            padding-top:8px;
-            border-top:1px solid rgba(201,168,76,0.12);
-            margin-top:4px;
-        }
-        .group-label:first-child{border-top:none;margin-top:0;padding-top:0;}
+            /* ── Forms ── */
+            .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+            .form-grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;}
+            .form-group{display:flex;flex-direction:column;gap:5px;}
+            .form-group.full{grid-column:1/-1;}
+            .form-label{
+                font-size:10px;
+                text-transform:uppercase;
+                letter-spacing:2px;
+                color:var(--gold-dim);
+                font-weight:700;
+            }
+            .form-input, .form-select{
+                background:var(--input-bg);
+                border:1px solid var(--input-border);
+                border-radius:10px;
+                color:var(--cream);
+                font-family:'Nunito',sans-serif;
+                font-size:14px;
+                padding:10px 14px;
+                transition:border-color 0.2s,box-shadow 0.2s;
+                width:100%;
+                outline:none;
+            }
+            .form-input:focus,.form-select:focus{
+                border-color:var(--gold);
+                box-shadow:0 0 0 3px rgba(201,168,76,0.12);
+            }
+            .form-input.time-input{font-variant-numeric:tabular-nums;letter-spacing:2px;font-size:15px;font-weight:700;}
+            .form-select option{background:var(--green-mid);}
 
-        /* ── Buttons ── */
-        .btn{
-            display:inline-flex;align-items:center;gap:7px;
-            padding:10px 22px;border-radius:30px;
-            font-family:'Nunito',sans-serif;font-size:13px;font-weight:700;
-            letter-spacing:0.5px;border:none;cursor:pointer;
-            transition:transform 0.15s,box-shadow 0.15s,opacity 0.15s;
-            text-decoration:none;
-        }
-        .btn:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(0,0,0,0.35);}
-        .btn-primary{background:linear-gradient(135deg,var(--gold-dim),var(--gold));color:var(--green-dark);}
-        .btn-secondary{background:rgba(201,168,76,0.1);border:1px solid var(--card-border);color:var(--cream);}
-        .btn-danger{background:var(--red-bg);border:1px solid var(--red-border);color:var(--red-soft);}
-        .btn-sm{padding:6px 14px;font-size:11px;}
+            .group-label{
+                font-size:9px;letter-spacing:3px;text-transform:uppercase;
+                color:var(--gold-dim);
+                grid-column:1/-1;
+                padding-top:8px;
+                border-top:1px solid rgba(201,168,76,0.12);
+                margin-top:4px;
+            }
+            .group-label:first-child{border-top:none;margin-top:0;padding-top:0;}
 
-        /* ── Alert ── */
-        .alert{
-            border-radius:12px;padding:14px 18px;margin-bottom:22px;
-            font-size:13px;font-weight:600;
-            display:flex;align-items:flex-start;gap:10px;
-            animation:fadein 0.4s ease both;
-        }
-        .alert-success{background:rgba(27,94,53,0.35);border:1px solid rgba(27,94,53,0.6);color:#7FD499;}
-        .alert-error  {background:var(--red-bg);border:1px solid var(--red-border);color:var(--red-soft);}
-        .alert ul{margin:6px 0 0 16px;}
-        .alert li{margin-bottom:2px;}
+            /* ── Buttons ── */
+            .btn{
+                display:inline-flex;align-items:center;gap:7px;
+                padding:10px 22px;border-radius:30px;
+                font-family:'Nunito',sans-serif;font-size:13px;font-weight:700;
+                letter-spacing:0.5px;border:none;cursor:pointer;
+                transition:transform 0.15s,box-shadow 0.15s,opacity 0.15s;
+                text-decoration:none;
+            }
+            .btn:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(0,0,0,0.35);}
+            .btn-primary{background:linear-gradient(135deg,var(--gold-dim),var(--gold));color:var(--green-dark);}
+            .btn-secondary{background:rgba(201,168,76,0.1);border:1px solid var(--card-border);color:var(--cream);}
+            .btn-danger{background:var(--red-bg);border:1px solid var(--red-border);color:var(--red-soft);}
+            .btn-sm{padding:6px 14px;font-size:11px;}
 
-        /* ── Table ── */
-        .table-wrap{overflow-x:auto;}
-        table{width:100%;border-collapse:collapse;font-size:13px;}
-        thead th{
-            padding:10px 14px;
-            text-align:left;
-            font-size:9px;
-            letter-spacing:2px;
-            text-transform:uppercase;
-            color:var(--gold-dim);
-            border-bottom:1px solid var(--card-border);
-            white-space:nowrap;
-        }
-        tbody tr{border-bottom:1px solid rgba(201,168,76,0.07);transition:background 0.15s;}
-        tbody tr:hover{background:rgba(201,168,76,0.05);}
-        tbody td{padding:12px 14px;vertical-align:middle;}
-        .td-icon{font-size:18px;}
-        .status-dot{
-            display:inline-block;width:8px;height:8px;border-radius:50%;
-            margin-right:5px;vertical-align:middle;
-        }
-        .dot-green{background:#4CAF50;}
-        .dot-red  {background:#E07070;}
+            /* ── Alert ── */
+            .alert{
+                border-radius:12px;padding:14px 18px;margin-bottom:22px;
+                font-size:13px;font-weight:600;
+                display:flex;align-items:flex-start;gap:10px;
+                animation:fadein 0.4s ease both;
+            }
+            .alert-success{background:rgba(27,94,53,0.35);border:1px solid rgba(27,94,53,0.6);color:#7FD499;}
+            .alert-error  {background:var(--red-bg);border:1px solid var(--red-border);color:var(--red-soft);}
+            .alert ul{margin:6px 0 0 16px;}
+            .alert li{margin-bottom:2px;}
 
-        /* ── Date Picker Tabs ── */
-        .date-picker{
-            display:flex;flex-wrap:wrap;gap:10px;align-items:center;
-            background:rgba(7,23,10,0.6);
-            border:1px solid var(--card-border);
-            border-radius:14px;
-            padding:18px 22px;
-            margin-bottom:22px;
-        }
-        .date-picker label{font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--gold-dim);font-weight:700;}
-        .date-picker .form-select{max-width:180px;}
+            /* ── Table ── */
+            .table-wrap{overflow-x:auto;}
+            table{width:100%;border-collapse:collapse;font-size:13px;}
+            thead th{
+                padding:10px 14px;
+                text-align:left;
+                font-size:9px;
+                letter-spacing:2px;
+                text-transform:uppercase;
+                color:var(--gold-dim);
+                border-bottom:1px solid var(--card-border);
+                white-space:nowrap;
+            }
+            tbody tr{border-bottom:1px solid rgba(201,168,76,0.07);transition:background 0.15s;}
+            tbody tr:hover{background:rgba(201,168,76,0.05);}
+            tbody td{padding:12px 14px;vertical-align:middle;}
+            .td-icon{font-size:18px;}
+            .status-dot{
+                display:inline-block;width:8px;height:8px;border-radius:50%;
+                margin-right:5px;vertical-align:middle;
+            }
+            .dot-green{background:#4CAF50;}
+            .dot-red  {background:#E07070;}
 
-        /* ── Month tabs ── */
-        .month-tabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:18px;}
-        .month-tab{
-            padding:5px 12px;border-radius:20px;
-            font-size:11px;font-weight:700;letter-spacing:0.5px;
-            cursor:pointer;text-decoration:none;
-            border:1px solid rgba(201,168,76,0.2);
-            color:var(--cream-dim);background:transparent;
-            transition:all 0.15s;
-        }
-        .month-tab:hover,.month-tab.active{background:rgba(201,168,76,0.15);border-color:var(--gold);color:var(--gold);}
+            /* ── Date Picker Tabs ── */
+            .date-picker{
+                display:flex;flex-wrap:wrap;gap:10px;align-items:center;
+                background:rgba(7,23,10,0.6);
+                border:1px solid var(--card-border);
+                border-radius:14px;
+                padding:18px 22px;
+                margin-bottom:22px;
+            }
+            .date-picker label{font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--gold-dim);font-weight:700;}
+            .date-picker .form-select{max-width:180px;}
 
-        /* ── Password strength meter ── */
-        .pw-meter{margin-top:6px;}
-        .pw-bar{height:4px;border-radius:4px;background:rgba(255,255,255,0.1);overflow:hidden;}
-        .pw-fill{height:100%;width:0%;border-radius:4px;transition:width 0.3s,background 0.3s;}
-        .pw-hint{font-size:10px;color:var(--cream-dim);margin-top:4px;}
+            /* ── Month tabs ── */
+            .month-tabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:18px;}
+            .month-tab{
+                padding:5px 12px;border-radius:20px;
+                font-size:11px;font-weight:700;letter-spacing:0.5px;
+                cursor:pointer;text-decoration:none;
+                border:1px solid rgba(201,168,76,0.2);
+                color:var(--cream-dim);background:transparent;
+                transition:all 0.15s;
+            }
+            .month-tab:hover,.month-tab.active{background:rgba(201,168,76,0.15);border-color:var(--gold);color:var(--gold);}
 
-        /* ── Toggle checkbox ── */
-        .toggle-wrap{display:flex;align-items:center;gap:10px;}
-        .toggle{position:relative;width:40px;height:22px;}
-        .toggle input{opacity:0;width:0;height:0;}
-        .toggle-slider{
-            position:absolute;inset:0;border-radius:22px;
-            background:rgba(255,255,255,0.1);
-            cursor:pointer;transition:background 0.3s;
-        }
-        .toggle-slider::before{
-            content:'';position:absolute;
-            width:16px;height:16px;border-radius:50%;
-            bottom:3px;left:3px;
-            background:var(--cream-dim);transition:transform 0.3s,background 0.3s;
-        }
-        .toggle input:checked + .toggle-slider{background:var(--green);}
-        .toggle input:checked + .toggle-slider::before{transform:translateX(18px);background:var(--gold);}
-        .toggle-label{font-size:12px;color:var(--cream-dim);}
+            /* ── Password strength meter ── */
+            .pw-meter{margin-top:6px;}
+            .pw-bar{height:4px;border-radius:4px;background:rgba(255,255,255,0.1);overflow:hidden;}
+            .pw-fill{height:100%;width:0%;border-radius:4px;transition:width 0.3s,background 0.3s;}
+            .pw-hint{font-size:10px;color:var(--cream-dim);margin-top:4px;}
 
-        /* ── Login page specific ── */
-        .login-wrap{
-            min-height:100vh;display:flex;align-items:center;justify-content:center;
-            padding:20px;position:relative;z-index:1;
-        }
-        .login-box{width:100%;max-width:420px;}
-        .login-hero{text-align:center;margin-bottom:28px;}
-        .login-mosque{font-size:54px;animation:glow-pulse 3.5s ease-in-out infinite;}
-        .login-title{
-            font-family:'Cinzel Decorative',serif;
-            font-size:clamp(14px,3.5vw,22px);color:var(--gold);
-            letter-spacing:2px;margin:8px 0 2px;
-        }
-        .login-sub{font-size:9px;color:var(--cream-dim);letter-spacing:4px;text-transform:uppercase;}
-        .login-rule{width:100px;height:1px;background:linear-gradient(to right,transparent,var(--gold),transparent);margin:14px auto 0;}
+            /* ── Toggle checkbox ── */
+            .toggle-wrap{display:flex;align-items:center;gap:10px;}
+            .toggle{position:relative;width:40px;height:22px;}
+            .toggle input{opacity:0;width:0;height:0;}
+            .toggle-slider{
+                position:absolute;inset:0;border-radius:22px;
+                background:rgba(255,255,255,0.1);
+                cursor:pointer;transition:background 0.3s;
+            }
+            .toggle-slider::before{
+                content:'';position:absolute;
+                width:16px;height:16px;border-radius:50%;
+                bottom:3px;left:3px;
+                background:var(--cream-dim);transition:transform 0.3s,background 0.3s;
+            }
+            .toggle input:checked + .toggle-slider{background:var(--green);}
+            .toggle input:checked + .toggle-slider::before{transform:translateX(18px);background:var(--gold);}
+            .toggle-label{font-size:12px;color:var(--cream-dim);}
 
-        /* ── View toggle buttons ── */
-        .view-toggle-btn {
-            padding: 8px 18px;
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 0.5px;
-            color: var(--cream-dim);
-            text-decoration: none;
-            background: transparent;
-            transition: background 0.15s, color 0.15s;
-            white-space: nowrap;
-        }
-        .view-toggle-btn:hover { background: rgba(201,168,76,0.08); color: var(--cream); text-decoration: none; }
-        .view-toggle-btn.active { background: rgba(201,168,76,0.18); color: var(--gold-light); }
+            /* ── Login page specific ── */
+            .login-wrap{
+                min-height:100vh;display:flex;align-items:center;justify-content:center;
+                padding:20px;position:relative;z-index:1;
+            }
+            .login-box{width:100%;max-width:420px;}
+            .login-hero{text-align:center;margin-bottom:28px;}
+            .login-mosque{font-size:54px;animation:glow-pulse 3.5s ease-in-out infinite;}
+            .login-title{
+                font-family:'Cinzel Decorative',serif;
+                font-size:clamp(14px,3.5vw,22px);color:var(--gold);
+                letter-spacing:2px;margin:8px 0 2px;
+            }
+            .login-sub{font-size:9px;color:var(--cream-dim);letter-spacing:4px;text-transform:uppercase;}
+            .login-rule{width:100px;height:1px;background:linear-gradient(to right,transparent,var(--gold),transparent);margin:14px auto 0;}
 
-        /* ── Grid table ── */
-        .grid-table-wrap {
-            overflow-x: auto;
-            margin: 0 -4px;
-            padding: 0 4px;
-            /* max height with scroll for long months */
-            max-height: 68vh;
-            overflow-y: auto;
-            border: 1px solid var(--card-border);
-            border-radius: 12px;
-        }
-        .grid-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 13px;
-            min-width: 620px;
-        }
-        .grid-table thead {
-            position: sticky;
-            top: 0;
-            z-index: 2;
-            background: rgba(7,23,10,0.97);
-            backdrop-filter: blur(10px);
-        }
-        .grid-table thead th {
-            padding: 10px 10px;
-            text-align: center;
-            font-size: 10px;
-            letter-spacing: 1.5px;
-            text-transform: uppercase;
-            color: var(--gold-dim);
-            border-bottom: 2px solid var(--card-border);
-            white-space: nowrap;
-        }
-        .grid-table thead th:first-child { text-align: left; padding-left: 14px; }
-        .grid-table tbody tr {
-            border-bottom: 1px solid rgba(201,168,76,0.06);
-            transition: background 0.12s;
-        }
-        .grid-table tbody tr:hover { background: rgba(201,168,76,0.05); }
-        .grid-table tbody td { padding: 6px 8px; text-align: center; vertical-align: middle; }
-        .grid-table tbody td:first-child { text-align: left; padding-left: 14px; }
+            /* ── View toggle buttons ── */
+            .view-toggle-btn {
+                padding: 8px 18px;
+                font-size: 12px;
+                font-weight: 700;
+                letter-spacing: 0.5px;
+                color: var(--cream-dim);
+                text-decoration: none;
+                background: transparent;
+                transition: background 0.15s, color 0.15s;
+                white-space: nowrap;
+            }
+            .view-toggle-btn:hover { background: rgba(201,168,76,0.08); color: var(--cream); text-decoration: none; }
+            .view-toggle-btn.active { background: rgba(201,168,76,0.18); color: var(--gold-light); }
 
-        .col-day { min-width: 80px; }
-        .col-action { width: 54px; }
+            /* ── Grid table ── */
+            .grid-table-wrap {
+                overflow-x: auto;
+                margin: 0 -4px;
+                padding: 0 4px;
+                /* max height with scroll for long months */
+                max-height: 68vh;
+                overflow-y: auto;
+                border: 1px solid var(--card-border);
+                border-radius: 12px;
+            }
+            .grid-table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 13px;
+                min-width: 620px;
+            }
+            .grid-table thead {
+                position: sticky;
+                top: 0;
+                z-index: 2;
+                background: rgba(7,23,10,0.97);
+                backdrop-filter: blur(10px);
+            }
+            .grid-table thead th {
+                padding: 10px 10px;
+                text-align: center;
+                font-size: 10px;
+                letter-spacing: 1.5px;
+                text-transform: uppercase;
+                color: var(--gold-dim);
+                border-bottom: 2px solid var(--card-border);
+                white-space: nowrap;
+            }
+            .grid-table thead th:first-child { text-align: left; padding-left: 14px; }
+            .grid-table tbody tr {
+                border-bottom: 1px solid rgba(201,168,76,0.06);
+                transition: background 0.12s;
+            }
+            .grid-table tbody tr:hover { background: rgba(201,168,76,0.05); }
+            .grid-table tbody td { padding: 6px 8px; text-align: center; vertical-align: middle; }
+            .grid-table tbody td:first-child { text-align: left; padding-left: 14px; }
 
-        /* Day column */
-        .day-num {
-            font-size: 15px;
-            font-weight: 800;
-            color: var(--cream);
-            font-variant-numeric: tabular-nums;
-            margin-right: 5px;
-        }
-        .day-dow {
-            font-size: 10px;
-            color: var(--gold-dim);
-            letter-spacing: 1px;
-            text-transform: uppercase;
-        }
-        .today-pip {
-            display: inline-block;
-            font-size: 8px;
-            letter-spacing: 1px;
-            text-transform: uppercase;
-            background: var(--gold);
-            color: var(--green-dark);
-            padding: 1px 6px;
-            border-radius: 10px;
-            font-weight: 800;
-            margin-left: 5px;
-            vertical-align: middle;
-        }
-        .grid-today td { background: rgba(201,168,76,0.07); }
+            .col-day { min-width: 80px; }
+            .col-action { width: 54px; }
 
-        /* Grid time inputs — compact */
-        .grid-time-input {
-            background: var(--input-bg);
-            border: 1px solid rgba(201,168,76,0.2);
-            border-radius: 7px;
-            color: var(--cream);
-            font-family: 'Nunito', sans-serif;
-            font-size: 13px;
-            font-weight: 700;
-            font-variant-numeric: tabular-nums;
-            letter-spacing: 1px;
-            padding: 5px 7px;
-            width: 90px;
-            outline: none;
-            transition: border-color 0.2s, box-shadow 0.2s;
-            text-align: center;
-        }
-        .grid-time-input:focus {
-            border-color: var(--gold);
-            box-shadow: 0 0 0 2px rgba(201,168,76,0.15);
-        }
+            /* Day column */
+            .day-num {
+                font-size: 15px;
+                font-weight: 800;
+                color: var(--cream);
+                font-variant-numeric: tabular-nums;
+                margin-right: 5px;
+            }
+            .day-dow {
+                font-size: 10px;
+                color: var(--gold-dim);
+                letter-spacing: 1px;
+                text-transform: uppercase;
+            }
+            .today-pip {
+                display: inline-block;
+                font-size: 8px;
+                letter-spacing: 1px;
+                text-transform: uppercase;
+                background: var(--gold);
+                color: var(--green-dark);
+                padding: 1px 6px;
+                border-radius: 10px;
+                font-weight: 800;
+                margin-left: 5px;
+                vertical-align: middle;
+            }
+            .grid-today td { background: rgba(201,168,76,0.07); }
 
-        /* Flash animation for copy-down */
-        @keyframes grid-flash-anim {
-            0%   { background: rgba(201,168,76,0.22); }
-            100% { background: transparent; }
-        }
-        .grid-flash { animation: grid-flash-anim 0.6s ease both; }
+            /* Grid time inputs — compact */
+            .grid-time-input {
+                background: var(--input-bg);
+                border: 1px solid rgba(201,168,76,0.2);
+                border-radius: 7px;
+                color: var(--cream);
+                font-family: 'Nunito', sans-serif;
+                font-size: 13px;
+                font-weight: 700;
+                font-variant-numeric: tabular-nums;
+                letter-spacing: 1px;
+                padding: 5px 7px;
+                width: 90px;
+                outline: none;
+                transition: border-color 0.2s, box-shadow 0.2s;
+                text-align: center;
+            }
+            .grid-time-input:focus {
+                border-color: var(--gold);
+                box-shadow: 0 0 0 2px rgba(201,168,76,0.15);
+            }
 
-        @media(max-width:780px){
-            .layout{flex-direction:column;}
-            .sidebar{width:100%;height:auto;position:relative;flex-direction:row;flex-wrap:wrap;}
-            .main{padding:20px 16px 60px;}
-            .form-grid,.form-grid-3{grid-template-columns:1fr;}
-            .form-group.full{grid-column:1;}
-            .day-two-col { grid-template-columns: 1fr !important; }
-        }
-        @media(max-width:520px){
-            .sidebar{flex-direction:column;}
-            .card-body{padding:20px 18px;}
-        }
+            /* Flash animation for copy-down */
+            @keyframes grid-flash-anim {
+                0%   { background: rgba(201,168,76,0.22); }
+                100% { background: transparent; }
+            }
+            .grid-flash { animation: grid-flash-anim 0.6s ease both; }
+
+            @media(max-width:780px){
+                .layout{flex-direction:column;}
+                .sidebar{width:100%;height:auto;position:relative;flex-direction:row;flex-wrap:wrap;}
+                .main{padding:20px 16px 60px;}
+                .form-grid,.form-grid-3{grid-template-columns:1fr;}
+                .form-group.full{grid-column:1;}
+                .day-two-col { grid-template-columns: 1fr !important; }
+            }
+            @media(max-width:520px){
+                .sidebar{flex-direction:column;}
+                .card-body{padding:20px 18px;}
+            }
+
+            /* ── Salaah Generator (shown only on that page) ── */
+            .sg-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+            .sg-form-grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;}
+            .sg-form-grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;}
+            @media(max-width:900px){.sg-form-grid-4{grid-template-columns:repeat(3,1fr);}}
+            @media(max-width:700px){.sg-form-grid{grid-template-columns:1fr;}.sg-form-grid-3{grid-template-columns:1fr 1fr;}.sg-form-grid-4{grid-template-columns:repeat(2,1fr);}}
+            #sg-map{height:280px;border-radius:12px;border:1px solid var(--card-border);margin:12px 0;z-index:1;}
+            .sg-search-results{position:absolute;width:100%;background:var(--input-bg);border:1px solid var(--gold);border-radius:10px;z-index:1000;max-height:250px;overflow-y:auto;display:none;margin-top:5px;box-shadow:var(--shadow);}
+            .sg-search-item{padding:12px 14px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,0.05);font-size:13px;color:var(--cream);}
+            .sg-search-item:hover{background:rgba(201,168,76,0.15);color:var(--gold-light);}
+            .sg-grid-table-wrap{max-height:500px;overflow-y:auto;border:1px solid var(--card-border);border-radius:12px;margin-top:15px;}
+            .sg-cards-wrap > .card{margin-bottom:20px;}
+            .sg-cards-wrap > .card:last-child{margin-bottom:0;}
+            .sg-grid-table{width:100%;border-collapse:collapse;font-size:13px;}
+            .sg-grid-table thead{position:sticky;top:0;background:var(--sidebar-bg-97);backdrop-filter:blur(10px);z-index:2;}
+            .sg-grid-table thead th{padding:12px 10px;text-align:center;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:var(--gold-dim);border-bottom:2px solid var(--card-border);white-space:nowrap;}
+            .sg-grid-table tbody tr{border-bottom:1px solid rgba(201,168,76,0.06);}
+            .sg-grid-table tbody tr:hover{background:rgba(201,168,76,0.05);}
+            .sg-grid-table tbody td{padding:8px;text-align:center;font-variant-numeric:tabular-nums;}
+            .sg-tt-wrapper{position:relative;display:inline-block;margin-left:5px;cursor:help;color:var(--gold);font-weight:800;}
+            .sg-tt-wrapper .sg-tt-text{visibility:hidden;width:220px;background-color:var(--sidebar-bg-95);color:var(--cream);text-align:left;border-radius:8px;padding:10px 12px;position:absolute;z-index:100;bottom:125%;left:50%;margin-left:-110px;opacity:0;transition:opacity 0.3s;font-size:11px;text-transform:none;letter-spacing:normal;border:1px solid var(--gold-dim);box-shadow:var(--shadow);line-height:1.5;font-weight:400;}
+            .sg-tt-wrapper .sg-tt-text::after{content:"";position:absolute;top:100%;left:50%;margin-left:-5px;border-width:5px;border-style:solid;border-color:var(--gold-dim) transparent transparent transparent;}
+            .sg-tt-wrapper:hover .sg-tt-text{visibility:visible;opacity:1;}
     </style>
     <?php if (($site['active_theme'] ?? 'green') !== 'green') echo nmcRenderThemeCSS($site); ?>
 </head>
@@ -1567,7 +1991,8 @@ $readonly_fields = [
      ══════════════════════════════════════════════ -->
     <div class="layout">
 
-        <!-- Sidebar -->
+        <!-- Sidebar — background set via inline PHP so theme overrides always apply -->
+        <?php $sv=nmcGetThemeVars($site); [$sbr,$sbg,$sbb]=nmcHexToRgb($sv['bg_dark']); ?>
         <aside class="sidebar">
             <div class="sidebar-logo">
                 <span class="sidebar-mosque">🕌</span>
@@ -1617,6 +2042,9 @@ $readonly_fields = [
                 </a>
                 <?php if (isSuperAdmin()): ?>
                     <div class="nav-label" style="margin-top:8px;">Administration</div>
+                    <a href="admin.php?action=salaah_generator" class="<?= $action==='salaah_generator'?'active':'' ?>">
+                        <span class="nav-icon">🧮</span> Salaah Generator
+                    </a>
                     <a href="admin.php?action=users" class="<?= in_array($action,['users','edit_user','new_user'])?'active':'' ?>">
                         <span class="nav-icon">👥</span> Users
                     </a>
@@ -1627,32 +2055,33 @@ $readonly_fields = [
                     <a href="admin.php?action=settings" class="<?= in_array($action,['settings','save_settings'])?'active':'' ?>">
                         <span class="nav-icon">⚙️</span> Site Settings
                     </a>
-                    <a href="#" onclick="askMusjidLayout(event, true)" style="color:var(--gold);">
-                        <span class="nav-icon">🧪</span> Debug Sim Tool (Musjid)
-                    </a>
-                    <a href="index.php?sim=1&sim_date=<?= date('Y-m-d') ?>&sim_time=<?= date('H:i') ?>:00"
-                       target="_blank" style="color:var(--gold);">
-                        <span class="nav-icon">🧪</span> Debug Sim Tool (Website)
+                    <a href="#" onclick="openDebugSim(event)" style="color:var(--gold);">
+                        <span class="nav-icon">🧪</span> Debug Sim Tool
                     </a>
                 <?php endif; ?>
                 <div class="nav-label" style="margin-top:8px;">Site</div>
-                <a href="index.php" target="_blank">
-                    <span class="nav-icon">🌐</span> View Normal Site
-                </a>
-                <a href="#" onclick="askMusjidLayout(event, false)">
-                    <span class="nav-icon">📺</span> View Musjid Site
+                <a href="#" onclick="openSiteView(event)">
+                    <span class="nav-icon">🌐</span> View Site
                 </a>
                 <script>
-                    function askMusjidLayout(e, isSim) {
+                    function openDebugSim(e) {
                         e.preventDefault();
-                        let choice = prompt("Which display layout do you want to open?\n\nEnter 1 for Musjid 1 (Classic)\nEnter 2 for Musjid 2 (New Layout)", "1");
-                        if (choice === "1" || choice === "2") {
-                            let url = "index.php?display=musjid" + choice;
-                            if (isSim) {
-                                url += "&sim=1&sim_date=<?= date('Y-m-d') ?>&sim_time=<?= date('H:i') ?>:00";
-                            }
-                            window.open(url, "_blank");
-                        }
+                        const choice = prompt("Debug Sim Tool\n\nEnter:\n  1 — Normal Website\n  2 — Musjid Display 1 (Classic)\n  3 — Musjid Display 2 (New Layout)", "1");
+                        if (!choice) return;
+                        const now = '<?= date('Y-m-d') ?>';
+                        const t   = '<?= date('H:i') ?>:00';
+                        const sim = `&sim=1&sim_date=${now}&sim_time=${t}`;
+                        if      (choice === '1') window.open(`index.php?${sim}`, '_blank');
+                        else if (choice === '2') window.open(`index.php?display=musjid1${sim}`, '_blank');
+                        else if (choice === '3') window.open(`index.php?display=musjid2${sim}`, '_blank');
+                    }
+                    function openSiteView(e) {
+                        e.preventDefault();
+                        const choice = prompt("Open Site\n\nEnter:\n  1 — Normal Website\n  2 — Musjid Display 1 (Classic)\n  3 — Musjid Display 2 (New Layout)", "1");
+                        if (!choice) return;
+                        if      (choice === '1') window.open('index.php', '_blank');
+                        else if (choice === '2') window.open('index.php?display=musjid1', '_blank');
+                        else if (choice === '3') window.open('index.php?display=musjid2', '_blank');
                     }
                 </script>
                 <a href="hadith.php" target="_blank">
@@ -1796,7 +2225,7 @@ $readonly_fields = [
                             ['icon'=>'🕐','label'=>'Current Time',   'value'=>'<span id="db-clock">'.date('H:i:s').'</span>'],
                             ['icon'=>'🌙','label'=>'Hijri Date',      'value'=>$hijri_str . ($h_off != 0 ? ' <span style="font-size:11px;color:var(--gold-dim);">('.($h_off>0?'+':'').$h_off.'d)</span>' : '')],
                             ['icon'=>$madhab_icon,'label'=>'Active Madhab','value'=>$madhab_label,
-                                    'sub'=>'Asr boundary: '.($madhab_label==='Hanafi'?'e_asr_hanafi (later)':'e_asr_shafi (earlier)'),
+                                    'sub'=>'Asr boundary: '.($madhab_label==='Hanafi'?'e_asr_hanafianafi (later)':'e_asr_shafihafi (earlier)'),
                                     'link'=>isSuperAdmin()?'admin.php?action=settings':null],
                     ];
                     foreach ($today_cards as $i=>$c):
@@ -2031,7 +2460,7 @@ $readonly_fields = [
                             <div style="font-size:22px;margin-bottom:6px;">🎨</div>
                             <div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--gold-dim);">Themes</div>
                             <?php
-                            $theme_labels = ['green'=>'Forest Green','blue'=>'Midnight Blue','burgundy'=>'Royal Burgundy','grey'=>'Slate Grey','white'=>'Ivory Light','custom'=>'Custom'];
+                            $theme_labels = ['green'=>'Forest Green','blue'=>'Midnight Blue','burgundy'=>'Royal Burgundy','grey'=>'Slate Grey','white'=>'Ivory Light','sage'=>'Sage Light','custom'=>'Custom'];
                             $cur_theme = $site['active_theme'] ?? 'green';
                             ?>
                             <div style="font-size:13px;font-weight:700;color:var(--gold-light);margin-top:8px;"><?= e($theme_labels[$cur_theme] ?? ucfirst($cur_theme)) ?></div>
@@ -2402,9 +2831,12 @@ $readonly_fields = [
                                                     <a href="admin.php?action=unlock_user&uid=<?= $u['id'] ?>" class="btn btn-secondary btn-sm" style="color:#7FD499;">🔓</a>
                                                 <?php endif; ?>
                                                 <?php if ($u['id'] != $_SESSION['admin_id']): ?>
-                                                    <a href="admin.php?action=delete_user&uid=<?= $u['id'] ?>"
-                                                       class="btn btn-danger btn-sm"
-                                                       onclick="return confirm('Delete user <?= e($u['username']) ?>? This cannot be undone.')">🗑️</a>
+                                                    <form method="POST" action="admin.php" style="display:inline;" onsubmit="return confirm('Delete user <?= e($u['username']) ?>? This cannot be undone.')">
+                                                        <input type="hidden" name="action" value="delete_user">
+                                                        <input type="hidden" name="uid" value="<?= (int)$u['id'] ?>">
+                                                        <input type="hidden" name="csrf" value="<?= e($_SESSION['csrf']) ?>">
+                                                        <button type="submit" class="btn btn-danger btn-sm" style="cursor:pointer;font-family:inherit;">🗑️</button>
+                                                    </form>
                                                 <?php endif; ?>
                                             </div>
                                         </td>
@@ -2630,6 +3062,23 @@ $readonly_fields = [
                                     </div>
                                 </div>
 
+                                <div class="form-group" style="margin-bottom:20px;padding-top:16px;border-top:1px solid rgba(201,168,76,0.1);">
+                                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                                        <div>
+                                            <label class="form-label" style="margin-bottom:4px;">Use Iftaar Nomenclature with Sunset</label>
+                                            <div style="font-size:10px;color:var(--cream-dim);">
+                                                When on, "Sunset" displays as "Sunset / Iftaar" everywhere on the public site and musjid displays.
+                                            </div>
+                                        </div>
+                                        <div class="toggle-wrap">
+                                            <label class="toggle">
+                                                <input type="checkbox" name="use_iftaar" value="1" <?= !empty($site['use_iftaar']) ? 'checked' : '' ?>>
+                                                <span class="toggle-slider"></span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <?php if ($setting_meta): ?>
                                     <div style="font-size:10px;color:var(--gold-dim);margin-bottom:18px;">
                                         Last updated: <?= date('d M Y H:i', strtotime($setting_meta['updated_at'])) ?>
@@ -2730,7 +3179,7 @@ $readonly_fields = [
                                          onclick="selectMadhab('hanafi')">
                                         <div style="font-size:22px;margin-bottom:6px;">🕌</div>
                                         <div style="font-family:'Cinzel Decorative',serif;font-size:12px;color:var(--gold);">Hanafi</div>
-                                        <div style="font-size:10px;color:var(--cream-dim);margin-top:4px;">Later Asr earliest<br>(e_asr_hanafi)</div>
+                                        <div style="font-size:10px;color:var(--cream-dim);margin-top:4px;">Later Asr earliest<br>(e_asr_hanafianafi)</div>
                                     </div>
                                 </label>
                                 <!-- Shafi -->
@@ -2744,7 +3193,7 @@ $readonly_fields = [
                                          onclick="selectMadhab('shafi')">
                                         <div style="font-size:22px;margin-bottom:6px;">🕌</div>
                                         <div style="font-family:'Cinzel Decorative',serif;font-size:12px;color:var(--gold);">Shafi</div>
-                                        <div style="font-size:10px;color:var(--cream-dim);margin-top:4px;">Earlier Asr earliest<br>(e_asr_shafi)</div>
+                                        <div style="font-size:10px;color:var(--cream-dim);margin-top:4px;">Earlier Asr earliest<br>(e_asr_shafihafi)</div>
                                     </div>
                                 </label>
                             </div>
@@ -3666,8 +4115,12 @@ $readonly_fields = [
                             <div style="display:flex;gap:8px;flex-shrink:0;align-items:center;">
                                 <a href="admin.php?action=edit_community_msg&id=<?= $cm['id'] ?>" class="btn btn-secondary" style="padding:7px 14px;font-size:12px;">✏️ Edit</a>
                                 <a href="admin.php?action=toggle_community_msg&id=<?= $cm['id'] ?>" class="btn btn-secondary" style="padding:7px 14px;font-size:12px;"><?= $cm['is_active'] ? '⏸️ Disable' : '▶️ Enable' ?></a>
-                                <a href="admin.php?action=delete_community_msg&id=<?= $cm['id'] ?>" class="btn" style="padding:7px 14px;font-size:12px;background:var(--red-bg);border:1px solid var(--red-border);color:var(--red-soft);"
-                                   onclick="return confirm('Delete this message?')">🗑️ Delete</a>
+                                <form method="POST" action="admin.php" style="display:inline;" onsubmit="return confirm('Delete this community message?')">
+                                    <input type="hidden" name="action" value="delete_community_msg">
+                                    <input type="hidden" name="id" value="<?= (int)$cm['id'] ?>">
+                                    <input type="hidden" name="csrf" value="<?= e($_SESSION['csrf']) ?>">
+                                    <button type="submit" class="btn" style="padding:7px 14px;font-size:12px;background:var(--red-bg);border:1px solid var(--red-border);color:var(--red-soft);cursor:pointer;font-family:inherit;">🗑️ Delete</button>
+                                </form>
                             </div>
                         </div>
                     </div>
@@ -3855,8 +4308,12 @@ $readonly_fields = [
                             <div style="display:flex;gap:8px;flex-shrink:0;align-items:center;">
                                 <a href="admin.php?action=edit_funeral&id=<?= $fn['id'] ?>" class="btn btn-secondary" style="padding:7px 14px;font-size:12px;">✏️ Edit</a>
                                 <a href="admin.php?action=toggle_funeral&id=<?= $fn['id'] ?>" class="btn btn-secondary" style="padding:7px 14px;font-size:12px;"><?= $fn['is_active'] ? '⏸️ Disable' : '▶️ Enable' ?></a>
-                                <a href="admin.php?action=delete_funeral&id=<?= $fn['id'] ?>" class="btn" style="padding:7px 14px;font-size:12px;background:var(--red-bg);border:1px solid var(--red-border);color:var(--red-soft);"
-                                   onclick="return confirm('Delete this funeral notice?')">🗑️ Delete</a>
+                                <form method="POST" action="admin.php" style="display:inline;" onsubmit="return confirm('Permanently delete this funeral notice?')">
+                                    <input type="hidden" name="action" value="delete_funeral">
+                                    <input type="hidden" name="id" value="<?= (int)$fn['id'] ?>">
+                                    <input type="hidden" name="csrf" value="<?= e($_SESSION['csrf']) ?>">
+                                    <button type="submit" class="btn" style="padding:7px 14px;font-size:12px;background:var(--red-bg);border:1px solid var(--red-border);color:var(--red-soft);cursor:pointer;font-family:inherit;">🗑️ Delete</button>
+                                </form>
                             </div>
                         </div>
                     </div>
@@ -3961,8 +4418,12 @@ $readonly_fields = [
                             <div style="display:flex;gap:8px;flex-shrink:0;align-items:center;">
                                 <a href="admin.php?action=edit_ticker&id=<?= $tk['id'] ?>" class="btn btn-secondary" style="padding:7px 14px;font-size:12px;">✏️ Edit</a>
                                 <a href="admin.php?action=toggle_ticker&id=<?= $tk['id'] ?>" class="btn btn-secondary" style="padding:7px 14px;font-size:12px;"><?= $tk['is_active'] ? '⏸️ Disable' : '▶️ Enable' ?></a>
-                                <a href="admin.php?action=delete_ticker&id=<?= $tk['id'] ?>" class="btn" style="padding:7px 14px;font-size:12px;background:var(--red-bg);border:1px solid var(--red-border);color:var(--red-soft);"
-                                   onclick="return confirm('Delete this ticker?')">🗑️ Delete</a>
+                                <form method="POST" action="admin.php" style="display:inline;" onsubmit="return confirm('Delete this ticker message?')">
+                                    <input type="hidden" name="action" value="delete_ticker">
+                                    <input type="hidden" name="id" value="<?= (int)$tk['id'] ?>">
+                                    <input type="hidden" name="csrf" value="<?= e($_SESSION['csrf']) ?>">
+                                    <button type="submit" class="btn" style="padding:7px 14px;font-size:12px;background:var(--red-bg);border:1px solid var(--red-border);color:var(--red-soft);cursor:pointer;font-family:inherit;">🗑️ Delete</button>
+                                </form>
                             </div>
                         </div>
                     </div>
@@ -3995,6 +4456,7 @@ $readonly_fields = [
                     'burgundy' => ['name'=>'Royal Burgundy', 'emoji'=>'🍷', 'desc'=>'Rich dark reds with lovely warm gold highlights.',           'swatch_bg'=>'#120407', 'swatch_acc'=>'#D4A44C', 'swatch_card'=>'#240810'],
                     'grey'     => ['name'=>'Slate Grey',     'emoji'=>'🪨', 'desc'=>'Pure charcoal/grey tones with silver-grey accents.',         'swatch_bg'=>'#0D0E0F', 'swatch_acc'=>'#A0A8B0', 'swatch_card'=>'#181A1C'],
                     'white'    => ['name'=>'Ivory Light',    'emoji'=>'🕊️', 'desc'=>'Clean light theme — ivory backgrounds, warm amber accents.', 'swatch_bg'=>'#F7F5F0', 'swatch_acc'=>'#B07D2A', 'swatch_card'=>'#EDE9E0'],
+                    'sage'     => ['name'=>'Sage Light',     'emoji'=>'🍃', 'desc'=>'A bold high-contrast theme with a mint background and rich burgundy cards.', 'swatch_bg'=>'#abd7b3', 'swatch_acc'=>'#d4a44c', 'swatch_card'=>'#6b1d2e'],
                     'custom'   => ['name'=>'Custom',         'emoji'=>'🎨', 'desc'=>'Build your own theme with full colour control.',             'swatch_bg'=>$custom_vals['bg_dark'], 'swatch_acc'=>$custom_vals['gold'], 'swatch_card'=>$custom_vals['bg_mid']],
             ];
 
@@ -4140,6 +4602,7 @@ $readonly_fields = [
                         burgundy: {'--gold':'#D4A44C','--gold-light':'#E8C97A','--gold-dim':'#8A6232','--green-dark':'#120407','--green-mid':'#240810','--green':'#4A1020','--cream':'#F5EDE8','--cream-dim':'#C8A898'},
                         grey:     {'--gold':'#A0A8B0','--gold-light':'#C8D0D8','--gold-dim':'#606870','--green-dark':'#0D0E0F','--green-mid':'#181A1C','--green':'#252729','--cream':'#E8EAEC','--cream-dim':'#909498'},
                         white:    {'--gold':'#B07D2A','--gold-light':'#C9A84C','--gold-dim':'#8A6432','--green-dark':'#F7F5F0','--green-mid':'#EDE9E0','--green':'#DDD6C8','--cream':'#2A2420','--cream-dim':'#5A524A'},
+                        sage:     {'--gold':'#d4a44c','--gold-light':'#e8c97a','--gold-dim':'#8a6232','--green-dark':'#abd7b3','--green-mid':'#6b1d2e','--green':'#4a121e','--cream':'#f5ede8','--cream-dim':'#c8a898'},
                     };
 
                     function hexToRgb(hex) {
@@ -4551,6 +5014,227 @@ $readonly_fields = [
                 </script>
             <?php endif; ?>
 
+            <?php elseif ($action === 'salaah_generator' && isSuperAdmin()): /* ── SALAAH GENERATOR ── */ ?>
+                <div class="page-header">
+                    <div class="page-title">🧮 Salaah Perpetual Generator</div>
+                    <div class="page-desc">Generate a precise 366-day perpetual timetable using exact astronomical formulas, high latitude adjustments, and global conventions.</div>
+                </div>
+                <div class="gold-rule"></div>
+
+                <?php if ($sg_flash_success): ?><div class="alert alert-success">✅ <?= e($sg_flash_success) ?></div><?php endif; ?>
+                <?php if ($sg_flash_error):   ?><div class="alert alert-error">⚠️ <?= e($sg_flash_error) ?></div><?php endif; ?>
+
+                <form method="POST" action="admin.php?action=salaah_generator">
+                    <input type="hidden" name="csrf" value="<?= e($_SESSION['csrf']) ?>">
+                    <div class="sg-cards-wrap">
+                        <div class="card">
+                            <div class="card-top-rule"></div>
+                            <div class="card-body">
+                                <div style="font-family:'Cinzel Decorative',serif;font-size:13px;color:var(--gold);margin-bottom:20px;">📍 1. Location Discovery</div>
+                                <div class="form-group" style="position:relative;margin-bottom:16px;">
+                                    <div style="display:flex;justify-content:space-between;align-items:flex-end;">
+                                        <label class="form-label" for="sg-locSearch">Search Town / City</label>
+                                        <button type="button" id="sg-autoLocateBtn" onclick="sgTriggerAutoLocate()" class="btn btn-secondary" style="padding:4px 10px;font-size:10px;border-radius:6px;">📍 Auto-Locate Me</button>
+                                    </div>
+                                    <input type="text" id="sg-locSearch" placeholder="Start typing town name... e.g. London" class="form-input" autocomplete="off" style="margin-top:5px;">
+                                    <div id="sg-searchResults" class="sg-search-results"></div>
+                                </div>
+                                <div id="sg-map"></div>
+                                <div class="sg-form-grid-3">
+                                    <div class="form-group"><label class="form-label">Latitude</label><input type="text" name="lat" id="sg-lat" value="<?= e($_POST['lat'] ?? '-26.2041') ?>" class="form-input" readonly></div>
+                                    <div class="form-group"><label class="form-label">Longitude</label><input type="text" name="lng" id="sg-lng" value="<?= e($_POST['lng'] ?? '28.0473') ?>" class="form-input" readonly></div>
+                                    <div class="form-group">
+                                        <label class="form-label" style="display:flex;justify-content:space-between;"><span>Elevation (m)</span>
+                                            <label class="toggle-wrap" style="font-size:10px;cursor:pointer;"><input type="checkbox" name="use_elv" id="sg-use-elv" <?= !empty($_POST['use_elv'])?'checked':'' ?>>&nbsp;Use</label>
+                                        </label>
+                                        <input type="number" name="elv" id="sg-elv" value="<?= e($_POST['elv'] ?? '0') ?>" class="form-input" placeholder="e.g. 1750" <?= empty($_POST['use_elv'])?'disabled':'' ?>>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="card">
+                            <div class="card-top-rule"></div>
+                            <div class="card-body">
+                                <div style="font-family:'Cinzel Decorative',serif;font-size:13px;color:var(--gold);margin-bottom:20px;">⚙️ 2. Calculation Settings</div>
+                                <div class="sg-form-grid">
+                                    <div class="form-group">
+                                        <label class="form-label">Calculation Method</label>
+                                        <select name="calc_method" class="form-select">
+                                            <?php foreach(['MWL'=>'Muslim World League','ISNA'=>'ISNA (North America)','Egypt'=>'Egyptian Authority','Makkah'=>'Umm Al-Qura (Makkah)','Karachi'=>'University of Islamic Sciences, Karachi','Tehran'=>'Institute of Geophysics, Tehran','Jafari'=>'Shia Ithna Ashari (Jafari)','Gulf'=>'Gulf Region','Kuwait'=>'Kuwait','Qatar'=>'Qatar','Singapore'=>'Majlis Ugama Islam Singapura','London'=>'London Unified (UKIM/MCB)'] as $k=>$v): ?>
+                                                <option value="<?= $k ?>" <?= ($_POST['calc_method']??'MWL')===$k?'selected':'' ?>><?= $v ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">Timezone</label>
+                                        <select name="timezone" class="form-select">
+                                            <?php foreach(DateTimeZone::listIdentifiers() as $tz): ?>
+                                                <option value="<?= $tz ?>" <?= ($_POST['timezone']??'Africa/Johannesburg')===$tz?'selected':'' ?>><?= $tz ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">High Latitude Adjustment <span class="sg-tt-wrapper">?<span class="sg-tt-text">For locations above ~48°N or below ~48°S where Fajr/Isha times may be undefined in summer.</span></span></label>
+                                        <select name="high_lat" class="form-select">
+                                            <?php foreach(['none'=>'None (Standard)','nightmiddle'=>'Night Middle','anglebased'=>'Angle-Based','oneseventh'=>'One Seventh'] as $k=>$v): ?>
+                                                <option value="<?= $k ?>" <?= ($_POST['high_lat']??'none')===$k?'selected':'' ?>><?= $v ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">Jamaat Offset (mins) <span class="sg-tt-wrapper">?<span class="sg-tt-text">Minutes after Azan for Fajr, Zuhr, Asr, and Esha Jamaats.</span></span></label>
+                                        <input type="number" name="j_offset" value="<?= e($_POST['j_offset'] ?? '0') ?>" class="form-input" min="0" max="60">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="card">
+                            <div class="card-top-rule"></div>
+                            <div class="card-body">
+                                <div style="font-family:'Cinzel Decorative',serif;font-size:13px;color:var(--gold);margin-bottom:8px;">🛡️ 3. Precision Buffers (Minutes)</div>
+                                <div style="font-size:11px;color:var(--cream-dim);margin-bottom:20px;">Add or subtract minutes from specific times. (e.g., -5 for Sehri Ends ensures 5 minutes of safety before Fajr).</div>
+                                <div class="sg-form-grid-4">
+                                    <?php
+                                    $sg_fields = ['fajr'=>'Fajr Jam','sehri'=>'Sehri Ends','sunrise'=>'Sunrise','zawaal'=>'Zawaal','e_zuhr'=>'Zuhr Early','zuhr'=>'Zuhr Jam','e_asr_hanafi'=>'Asr Ear(H)','asr'=>'Asr Jam','sunset'=>'Sunset','maghrib'=>'Maghrib','e_esha'=>'Esha Early','esha'=>'Esha Jam'];
+                                    $sg_defaults = ['sehri'=>-5,'zawaal'=>-5,'e_zuhr'=>5,'zuhr'=>5,'maghrib'=>3];
+                                    foreach($sg_fields as $k=>$v):
+                                        $val = $_POST['buf'][$k] ?? ($sg_defaults[$k] ?? 0);
+                                        ?>
+                                        <div class="form-group"><label class="form-label"><?= $v ?></label><input type="number" name="buf[<?= $k ?>]" value="<?= e($val) ?>" class="form-input"></div>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+                        </div>
+
+                        <button type="submit" name="generate_preview" class="btn btn-primary" style="width:100%;font-size:14px;padding:12px;justify-content:center;">🧮 Calculate &amp; Generate Timetable</button>
+                    </div><!-- /.sg-cards-wrap -->
+                </form>
+
+            <?php if ($sg_preview): ?>
+                <div class="card" style="margin-top:32px;border-color:var(--gold);">
+                    <div class="card-top-rule" style="background:linear-gradient(to right,transparent,var(--gold-light),transparent);"></div>
+                    <div class="card-body">
+                        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:15px;">
+                            <div style="font-family:'Cinzel Decorative',serif;font-size:15px;color:var(--gold-light);">👁️ Preview Results (Perpetual 366 Days)</div>
+                            <form method="POST" action="admin.php?action=salaah_generator" style="margin:0;">
+                                <button type="submit" name="export_csv" class="btn btn-secondary">📥 Export CSV</button>
+                            </form>
+                        </div>
+                        <div class="sg-grid-table-wrap">
+                            <table class="sg-grid-table">
+                                <thead><tr><th>Date</th><th>🌅 Fajr</th><th>Sehri</th><th>🌄 Sunr</th><th>☀️ Z_Ear</th><th>Z_Jam</th><th>🕛 Zaw</th><th>🌤️ A_Han</th><th>A_Sha</th><th>A_Jam</th><th>🌆 Sunst</th><th>Magh</th><th>🌃 E_Ear</th><th>E_Jam</th></tr></thead>
+                                <tbody>
+                                <?php foreach($sg_preview as $r): ?>
+                                    <tr>
+                                        <td style="text-align:left;padding-left:14px;color:var(--gold-dim);"><strong><?= sprintf("%02d",$r['date']) ?></strong>/<?= sprintf("%02d",$r['month']) ?></td>
+                                        <td><?= $r['fajr'] ?></td><td style="color:var(--cream-dim);"><?= $r['sehri'] ?></td>
+                                        <td style="color:var(--cream-dim);"><?= $r['sunrise'] ?></td>
+                                        <td><?= $r['e_zuhr'] ?></td><td><?= $r['zuhr'] ?></td>
+                                        <td style="color:var(--cream-dim);"><?= $r['zawaal'] ?></td>
+                                        <td><?= $r['e_asr_hanafi'] ?></td><td style="color:var(--cream-dim);"><?= $r['e_asr_shafi'] ?></td><td><?= $r['asr'] ?></td>
+                                        <td style="color:var(--cream-dim);"><?= $r['sunset'] ?></td><td><?= $r['maghrib'] ?></td>
+                                        <td><?= $r['e_esha'] ?></td><td><?= $r['esha'] ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                        <form method="POST" action="admin.php?action=salaah_generator" style="margin-top:30px;background:rgba(192,57,43,0.08);border:1px solid rgba(192,57,43,0.3);border-radius:12px;padding:20px;">
+                            <input type="hidden" name="csrf" value="<?= e($_SESSION['csrf']) ?>">
+                            <div style="font-family:'Cinzel Decorative',serif;font-size:13px;color:var(--red-soft);margin-bottom:16px;">⚠️ Commit to Database</div>
+                            <div style="font-size:12px;color:var(--cream-dim);margin-bottom:16px;">This will permanently overwrite the selected table(s). This action cannot be undone.</div>
+                            <div style="display:flex;flex-wrap:wrap;gap:16px;margin-bottom:16px;">
+                                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" name="target_live"> <span>Live Table <code style="font-size:10px;">perpetual_salaah_times</code></span></label>
+                                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" name="target_backup"> <span>Backup Table <code style="font-size:10px;">perpetual_salaah_times_orig_2016</code></span></label>
+                            </div>
+                            <div class="form-group" style="margin-bottom:16px;">
+                                <label class="form-label">Safety Phrase — type exactly: <code>CONFIRM OVERWRITE</code></label>
+                                <input type="text" name="safety" class="form-input" placeholder="CONFIRM OVERWRITE" autocomplete="off">
+                            </div>
+                            <button type="submit" name="commit_data" class="btn" style="background:rgba(192,57,43,0.25);border:1px solid rgba(192,57,43,0.5);color:var(--red-soft);">🔴 Overwrite Database Now</button>
+                        </form>
+                    </div>
+                </div>
+            <?php endif; ?>
+
+                <script>
+                    (function(){
+                        // Leaflet map
+                        const defaultLat = <?= e($_POST['lat'] ?? '-26.2041') ?>;
+                        const defaultLng = <?= e($_POST['lng'] ?? '28.0473') ?>;
+                        const map = L.map('sg-map').setView([defaultLat, defaultLng], 10);
+                        const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'});
+                        const satLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'© Esri — Source: Esri, Maxar, Earthstar Geographics'});
+                        osmLayer.addTo(map);
+                        L.control.layers({'🗺️ Street Map': osmLayer, '🛰️ Satellite': satLayer}).addTo(map);
+                        const marker = L.marker([defaultLat, defaultLng],{draggable:true}).addTo(map);
+
+                        function sgUpdateFields(lat,lng){
+                            document.getElementById('sg-lat').value = lat.toFixed(6);
+                            document.getElementById('sg-lng').value = lng.toFixed(6);
+                            marker.setLatLng([lat,lng]);
+                            map.setView([lat,lng],12);
+                        }
+                        map.on('click',e=>sgUpdateFields(e.latlng.lat,e.latlng.lng));
+                        marker.on('dragend',()=>sgUpdateFields(marker.getLatLng().lat,marker.getLatLng().lng));
+
+                        document.getElementById('sg-use-elv').addEventListener('change',function(){
+                            document.getElementById('sg-elv').disabled = !this.checked;
+                        });
+
+                        window.sgTriggerAutoLocate = function(){
+                            if(!navigator.geolocation){alert('Geolocation not supported.');return;}
+                            const btn = document.getElementById('sg-autoLocateBtn');
+                            const orig = btn.innerHTML; btn.innerHTML = '⏳ Locating...';
+                            navigator.geolocation.getCurrentPosition(function(pos){
+                                const lat=pos.coords.latitude, lng=pos.coords.longitude;
+                                sgUpdateFields(lat,lng);
+                                fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`)
+                                    .then(r=>r.json()).then(d=>{
+                                    if(d.address){const t=d.address.city||d.address.town||d.address.village||d.address.suburb||'Your Location';document.getElementById('sg-locSearch').value=t;}
+                                    btn.innerHTML=orig;
+                                }).catch(()=>{btn.innerHTML=orig;});
+                            },function(err){console.warn('Geolocation error:',err.message);alert('Could not get location. Check browser permissions.');btn.innerHTML=orig;},{timeout:10000});
+                        };
+
+                        <?php if ($_SERVER['REQUEST_METHOD'] !== 'POST'): ?>
+                        document.addEventListener('DOMContentLoaded',function(){setTimeout(sgTriggerAutoLocate,800);});
+                        <?php endif; ?>
+
+                        // Location search
+                        let sgTimer;
+                        const sgInput = document.getElementById('sg-locSearch');
+                        const sgResults = document.getElementById('sg-searchResults');
+                        sgInput.addEventListener('input',function(){
+                            clearTimeout(sgTimer);
+                            const q=this.value.trim();
+                            if(q.length<3){sgResults.style.display='none';return;}
+                            sgTimer=setTimeout(()=>{
+                                fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}`)
+                                    .then(r=>r.json()).then(data=>{
+                                    sgResults.innerHTML='';
+                                    if(data.length){
+                                        sgResults.style.display='block';
+                                        data.slice(0,5).forEach(item=>{
+                                            const div=document.createElement('div');
+                                            div.className='sg-search-item';
+                                            div.innerHTML=`📍 ${item.display_name}`;
+                                            div.onclick=()=>{sgUpdateFields(parseFloat(item.lat),parseFloat(item.lon));sgResults.style.display='none';sgInput.value=item.display_name.split(',')[0];};
+                                            sgResults.appendChild(div);
+                                        });
+                                    }
+                                });
+                            },500);
+                        });
+                        document.addEventListener('click',e=>{if(e.target!==sgInput&&e.target!==sgResults)sgResults.style.display='none';});
+                    })();
+                </script>
+
+            <?php elseif ($action === 'salaah_generator'): ?>
+                <div class="alert alert-error">⚠️ Access denied. This section is for super admins only.</div>
+
             <?php else: ?>
                 <div class="alert alert-error">⚠️ Page not found or access denied.</div>
                 <a href="admin.php?action=dashboard" class="btn btn-secondary">← Dashboard</a>
@@ -4560,6 +5244,5 @@ $readonly_fields = [
         </main>
     </div><!-- /.layout -->
 <?php endif; ?>
-
 </body>
 </html>

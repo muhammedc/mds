@@ -133,9 +133,10 @@ $madhab       = 'hanafi'; // default
 $active_theme = 'green';
 $custom_theme_json = '{}';
 $remove_copyright = false;
+$use_iftaar = false;
 $jummah    = ['azaan' => '12:20', 'khutbah' => '12:30', 'jamaat' => '13:00', 'talk_by' => '']; // default
 if ($link) {
-    $sn = @$link->query("SELECT setting_key, setting_value FROM site_settings WHERE setting_key IN ('site_name','hijri_offset','madhab','active_theme','custom_theme_json','remove_copyright')");
+    $sn = @$link->query("SELECT setting_key, setting_value FROM site_settings WHERE setting_key IN ('site_name','hijri_offset','madhab','active_theme','custom_theme_json','remove_copyright','use_iftaar')");
     if ($sn) while ($sn_row = $sn->fetch(PDO::FETCH_ASSOC)) {
         if ($sn_row['setting_key'] === 'site_name')         $site_name    = $sn_row['setting_value'];
         if ($sn_row['setting_key'] === 'hijri_offset')      $hijri_offset = (int)$sn_row['setting_value'];
@@ -143,6 +144,7 @@ if ($link) {
         if ($sn_row['setting_key'] === 'active_theme')      $active_theme = $sn_row['setting_value'];
         if ($sn_row['setting_key'] === 'custom_theme_json') $custom_theme_json = $sn_row['setting_value'];
         if ($sn_row['setting_key'] === 'remove_copyright')  $remove_copyright = (bool)$sn_row['setting_value'];
+        if ($sn_row['setting_key'] === 'use_iftaar')        $use_iftaar       = (bool)$sn_row['setting_value'];
     }
 
     /* Auto-migrate talk_by column if missing */
@@ -158,6 +160,9 @@ if ($link) {
         ];
     }
 }
+
+/* ── Sunset label (respects Use Iftaar Nomenclature setting) ── */
+$sunset_label = $use_iftaar ? 'Sunset / Iftaar' : 'Sunset';
 
 /* ── Compute Hijri date with offset ── */
 $hijri_base_ts = $sim_active ? $sim_ts : time();
@@ -596,7 +601,7 @@ $events_js = $times ? json_encode([
         ['name' => 'Sehri Ends',     'time' => $times['sehri'],   'icon' => '🌙', 'verb' => 'ends in'],
         ['name' => 'Sunrise',        'time' => $times['sunrise'], 'icon' => '🌄', 'verb' => 'in'],
         ['name' => 'Zawaal',         'time' => $times['zawaal'],  'icon' => '🕛', 'verb' => 'in'],
-        ['name' => 'Sunset / Iftaar','time' => $times['sunset'],  'icon' => '🌆', 'verb' => 'in'],
+        ['name' => $sunset_label,'time' => $times['sunset'],  'icon' => '🌆', 'verb' => 'in'],
 ]) : '[]';
 
 /*
@@ -764,6 +769,11 @@ function nmcIndexThemeCSS(string $active_theme, string $custom_json): string {
                     'gold'=>'#B07D2A','gold_light'=>'#C9A84C','gold_dim'=>'#8A6432',
                     'bg_dark'=>'#F7F5F0','bg_mid'=>'#EDE9E0','bg_accent'=>'#DDD6C8',
                     'cream'=>'#2A2420','cream_dim'=>'#5A524A',
+            ],
+            'sage' => [
+                    'gold'=>'#d4a44c','gold_light'=>'#e8c97a','gold_dim'=>'#8a6232',
+                    'bg_dark'=>'#abd7b3','bg_mid'=>'#6b1d2e','bg_accent'=>'#4a121e',
+                    'cream'=>'#f5ede8','cream_dim'=>'#c8a898',
             ],
     ];
 
@@ -2174,9 +2184,9 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
             <div class="m-marker-card">
                 <span class="m-marker-icon">🌆</span>
                 <div>
-                    <div class="m-marker-name">Sunset / Iftaar</div>
+                    <div class="m-marker-name"><?= htmlspecialchars($sunset_label, ENT_QUOTES) ?></div>
                     <div class="m-marker-time"><?= $times['sunset'] ?></div>
-                    <div class="m-marker-note">Time of Iftaar</div>
+                    <?php if ($use_iftaar): ?><div class="m-marker-note">Time of Iftaar</div><?php endif; ?>
                 </div>
             </div>
             <div class="m-event-card">
@@ -3774,74 +3784,77 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
 <body>
 
 <?php if ($sim_active): ?>
-<div id="sim-panel" class="sim-collapsed">
-    <div id="sim-header">
-        <div class="sim-header-left">
-            <span style="font-size:15px;">🧪</span>
-            <span class="sim-title">Debug Sim Tool</span>
-            <span class="sim-badge" id="sim-badge">PAUSED</span>
+    <div id="sim-panel" class="sim-collapsed">
+        <div id="sim-header">
+            <div class="sim-header-left">
+                <span style="font-size:15px;">🧪</span>
+                <span class="sim-title">Debug Sim Tool</span>
+                <span class="sim-badge" id="sim-badge">PAUSED</span>
+            </div>
+            <button id="sim-collapse-btn" onclick="simToggleCollapse(event)" title="Expand/Collapse">▲</button>
         </div>
-        <button id="sim-collapse-btn" onclick="simToggleCollapse(event)" title="Expand/Collapse">▲</button>
+        <div id="sim-body">
+            <div id="sim-clock-display">--:--:--</div>
+            <div id="sim-status">Loading…</div>
+            <div class="sim-divider"></div>
+            <div class="sim-row">
+                <span class="sim-label">📅 Simulate Date</span>
+                <input type="date" class="sim-input" id="sim-date-input"
+                       value="<?= htmlspecialchars(date('Y-m-d', $sim_ts), ENT_QUOTES) ?>">
+            </div>
+            <div class="sim-row">
+                <span class="sim-label">🕐 Simulate Time</span>
+                <div class="sim-controls">
+                    <input type="range" id="sim-slider" min="0" max="86399" step="60"
+                           value="<?= (function($t){ $p=explode(':',$t); return (int)$p[0]*3600+(int)$p[1]*60+(isset($p[2])?(int)$p[2]:0); })($sim_time) ?>"
+                           style="flex:1;accent-color:#C9A84C;"
+                           oninput="simSliderMove(this.value)">
+                    <input type="text" class="sim-input" id="sim-time-input"
+                           value="<?= substr($sim_time,0,5) ?>"
+                           style="width:64px;text-align:center;"
+                           oninput="simTimeTextChange(this.value)">
+                </div>
+            </div>
+            <div class="sim-row">
+                <span class="sim-label">⚡ Speed</span>
+                <div class="sim-controls" id="sim-speed-btns">
+                    <button class="sim-speed-btn active" data-speed="1"   onclick="simSetSpeed(1)">1×</button>
+                    <button class="sim-speed-btn"        data-speed="5"   onclick="simSetSpeed(5)">5×</button>
+                    <button class="sim-speed-btn"        data-speed="30"  onclick="simSetSpeed(30)">30×</button>
+                    <button class="sim-speed-btn"        data-speed="60"  onclick="simSetSpeed(60)">60×</button>
+                    <button class="sim-speed-btn"        data-speed="300" onclick="simSetSpeed(300)">300×</button>
+                </div>
+            </div>
+            <div class="sim-divider"></div>
+            <div class="sim-row">
+                <span class="sim-label">🎯 Quick Scenarios</span>
+                <div class="sim-scenario-grid">
+                    <button class="sim-scenario-btn" onclick="simScenario('fajr_window')">🌅 Fajr Opens</button>
+                    <button class="sim-scenario-btn" onclick="simScenario('zawaal')">🔴 Zawaal</button>
+                    <button class="sim-scenario-btn" onclick="simScenario('zuhr_window')">☀️ Zuhr Opens</button>
+                    <button class="sim-scenario-btn" onclick="simScenario('asr_window')">🌤️ Asr Opens</button>
+                    <button class="sim-scenario-btn" onclick="simScenario('maghrib_window')">🌇 Maghrib Opens</button>
+                    <button class="sim-scenario-btn" onclick="simScenario('esha_window')">🌃 Esha Opens</button>
+                    <button class="sim-scenario-btn" onclick="simScenario('thu_maghrib')">🕌 Thu→Jummah</button>
+                    <button class="sim-scenario-btn" onclick="simScenario('fri_zuhr')">🕌 Fri Zuhr Now</button>
+                </div>
+            </div>
+            <div class="sim-divider"></div>
+            <div class="sim-action-row">
+                <button class="sim-btn sim-btn-primary"   onclick="simApply()">▶ Apply</button>
+                <button class="sim-btn sim-btn-secondary" onclick="simPause()" id="sim-pause-btn">⏸ Pause</button><button class="sim-btn sim-btn-danger"    onclick="simExit()">✕ Exit</button>
+            </div>
+        </div>
     </div>
-    <div id="sim-body">
-        <div id="sim-clock-display">--:--:--</div>
-        <div id="sim-status">Loading…</div>
-        <div class="sim-divider"></div>
-        <div class="sim-row">
-            <span class="sim-label">📅 Simulate Date</span>
-            <input type="date" class="sim-input" id="sim-date-input"
-                   value="<?= htmlspecialchars(date('Y-m-d', $sim_ts), ENT_QUOTES) ?>">
-        </div>
-        <div class="sim-row">
-            <span class="sim-label">🕐 Simulate Time</span>
-            <div class="sim-controls">
-                <input type="range" id="sim-slider" min="0" max="86399" step="60"
-                       value="<?= (function($t){ $p=explode(':',$t); return (int)$p[0]*3600+(int)$p[1]*60+(isset($p[2])?(int)$p[2]:0); })($sim_time) ?>"
-                       style="flex:1;accent-color:#C9A84C;"
-                       oninput="simSliderMove(this.value)">
-                <input type="text" class="sim-input" id="sim-time-input"
-                       value="<?= substr($sim_time,0,5) ?>"
-                       style="width:64px;text-align:center;"
-                       oninput="simTimeTextChange(this.value)">
-            </div>
-        </div>
-        <div class="sim-row">
-            <span class="sim-label">⚡ Speed</span>
-            <div class="sim-controls" id="sim-speed-btns">
-                <button class="sim-speed-btn active" data-speed="1"   onclick="simSetSpeed(1)">1×</button>
-                <button class="sim-speed-btn"        data-speed="5"   onclick="simSetSpeed(5)">5×</button>
-                <button class="sim-speed-btn"        data-speed="30"  onclick="simSetSpeed(30)">30×</button>
-                <button class="sim-speed-btn"        data-speed="60"  onclick="simSetSpeed(60)">60×</button>
-                <button class="sim-speed-btn"        data-speed="300" onclick="simSetSpeed(300)">300×</button>
-            </div>
-        </div>
-        <div class="sim-divider"></div>
-        <div class="sim-row">
-            <span class="sim-label">🎯 Quick Scenarios</span>
-            <div class="sim-scenario-grid">
-                <button class="sim-scenario-btn" onclick="simScenario('fajr_window')">🌅 Fajr Opens</button>
-                <button class="sim-scenario-btn" onclick="simScenario('zawaal')">🔴 Zawaal</button>
-                <button class="sim-scenario-btn" onclick="simScenario('zuhr_window')">☀️ Zuhr Opens</button>
-                <button class="sim-scenario-btn" onclick="simScenario('asr_window')">🌤️ Asr Opens</button>
-                <button class="sim-scenario-btn" onclick="simScenario('maghrib_window')">🌇 Maghrib Opens</button>
-                <button class="sim-scenario-btn" onclick="simScenario('esha_window')">🌃 Esha Opens</button>
-                <button class="sim-scenario-btn" onclick="simScenario('thu_maghrib')">🕌 Thu→Jummah</button>
-                <button class="sim-scenario-btn" onclick="simScenario('fri_zuhr')">🕌 Fri Zuhr Now</button>
-            </div>
-        </div>
-        <div class="sim-divider"></div>
-        <div class="sim-action-row">
-            <button class="sim-btn sim-btn-primary"   onclick="simApply()">▶ Apply</button>
-            <button class="sim-btn sim-btn-secondary" onclick="simPause()" id="sim-pause-btn">⏸ Pause</button><button class="sim-btn sim-btn-danger"    onclick="simExit()">✕ Exit</button>
-        </div>
-    </div>
-</div>
 <?php endif; ?>
 
 <div class="page-wrap">
     <header class="hero">
         <span class="hero-mosque">🕌</span>
         <h1 class="hero-title"><?= htmlspecialchars($site_name, ENT_QUOTES) ?></h1>
+        <?php if ($is_ramadan_active): ?>
+            <span style="font-size: 10px; color: var(--gold-light); letter-spacing: 3px; text-transform: uppercase; margin-top: 2px; font-weight: 700; display: block;">☪️ Ramadan Schedule Active</span>
+        <?php endif; ?>
         <div class="hero-sub">Daily Salaah Times</div>
         <div class="gold-rule"></div>
     </header>
@@ -4058,9 +4071,9 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
             <div class="marker-card">
                 <span class="marker-icon">🌆</span>
                 <div>
-                    <div class="marker-name">Sunset / Iftaar</div>
+                    <div class="marker-name"><?= htmlspecialchars($sunset_label, ENT_QUOTES) ?></div>
                     <div class="marker-time"><?= $times['sunset'] ?></div>
-                    <div class="marker-note">Time of Iftaar</div>
+                    <?php if ($use_iftaar): ?><div class="marker-note">Time of Iftaar</div><?php endif; ?>
                 </div>
             </div>
         </div>
