@@ -13,6 +13,10 @@
 
 date_default_timezone_set('Africa/Johannesburg');
 
+/* ── MDS Version — keep in sync with admin.php ── */
+define('MDS_VERSION',      '1.0.5a');
+define('MDS_VERSION_DATE', '01 Mar 2026');
+
 $display_param = $_GET['display'] ?? '';
 
 /* ── Session (needed for simulator/admin — skip for musjid display) ── */
@@ -3512,6 +3516,40 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
         .marker-time { font-size: 22px; font-weight: 800; color: var(--red-soft); font-variant-numeric: tabular-nums; letter-spacing: 1px; }
         .marker-note { font-size: 10px; color: var(--gold-dim); margin-top: 2px; }
 
+        /* ── Site Footer (copyright / version — hidden when remove_copyright is on) ── */
+        .mds-site-footer {
+            text-align: center;
+            padding: 22px 16px 80px;
+            border-top: 1px solid rgba(201,168,76,0.12);
+            margin-top: 32px;
+        }
+        .mds-footer-inner {
+            display: inline-flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: center;
+            gap: 6px 10px;
+            font-size: 11px;
+            color: var(--gold-dim);
+            letter-spacing: 0.5px;
+        }
+        .mds-footer-logo {
+            font-family: 'Cinzel Decorative', serif;
+            font-size: 10px;
+            color: var(--gold);
+            letter-spacing: 1px;
+        }
+        .mds-footer-sep { color: var(--gold-dim); opacity: 0.5; }
+        .mds-footer-version { color: var(--cream-dim); font-weight: 600; }
+        .mds-footer-vdate { color: var(--gold-dim); font-weight: 400; }
+        .mds-footer-copy { color: var(--cream-dim); }
+        .mds-footer-link {
+            color: var(--gold-dim);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+        .mds-footer-link:hover { color: var(--gold); text-decoration: underline; }
+
         /* ── Floating Hadith button ── */
         .hadith-fab {
             position: fixed;
@@ -4085,6 +4123,20 @@ $_nmc_theme_css = nmcIndexThemeCSS($active_theme, $custom_theme_json);
     <?php endif; ?>
 
 </div>
+
+<?php if (!$remove_copyright): ?>
+    <footer class="mds-site-footer">
+        <div class="mds-footer-inner">
+            <span class="mds-footer-logo">🕌 Musjid Display System</span>
+            <span class="mds-footer-sep">·</span>
+            <span class="mds-footer-version">v<?= MDS_VERSION ?> <span class="mds-footer-vdate">(<?= MDS_VERSION_DATE ?>)</span></span>
+            <span class="mds-footer-sep">·</span>
+            <span class="mds-footer-copy">© 2026 Muhammed Cotwal</span>
+            <span class="mds-footer-sep">·</span>
+            <a class="mds-footer-link" href="https://github.com/muhammedc/mds" target="_blank" rel="noopener">github.com/muhammedc/mds</a>
+        </div>
+    </footer>
+<?php endif; ?>
 
 <a href="hadith.php" class="hadith-fab">
     <span class="fab-icon">📖</span> Hadith of the Day

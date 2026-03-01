@@ -15,7 +15,7 @@ session_start();
 date_default_timezone_set('Africa/Johannesburg');
 
 /* ── MDS Version — update these two lines before every commit ── */
-define('MDS_VERSION',      '1.0.5');
+define('MDS_VERSION',      '1.0.5a');
 define('MDS_VERSION_DATE', '01 Mar 2026');
 
 /* ══════════════════════════════════════════════
